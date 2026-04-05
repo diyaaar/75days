@@ -456,6 +456,18 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     fetchPosts();
   };
 
+  const handleDeletePost = async (postId: string) => {
+    if (!confirm('Are you sure you want to delete this post?')) return;
+    try {
+      const { error } = await supabase.from('social_feed').delete().eq('id', postId).eq('user_id', session.user.id);
+      if (error) throw error;
+      toast.success('Post deleted');
+      fetchPosts();
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -589,7 +601,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
       )}
       {posts.map((post) => (
         <article key={post.id} className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-start justify-between">
             <div className="flex items-center gap-3">
               <img
                 src={post.profiles?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${post.profiles?.username || 'U'}`}
@@ -601,11 +613,18 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                 <span className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">{timeAgo(post.created_at)}</span>
               </div>
             </div>
-            {post.type !== 'manual_post' && (
-              <div className="bg-surface-container px-2 py-1 rounded-lg">
-                <span className="font-label text-[10px] text-primary-container font-bold tracking-widest uppercase">{post.type?.replace('_', ' ')}</span>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {post.type !== 'manual_post' && (
+                <div className="bg-surface-container px-2 py-1 rounded-lg">
+                  <span className="font-label text-[10px] text-primary-container font-bold tracking-widest uppercase">{post.type?.replace('_', ' ')}</span>
+                </div>
+              )}
+              {post.user_id === session.user.id && (
+                <button onClick={() => handleDeletePost(post.id)} className="text-on-surface-variant hover:text-error transition-colors p-1 rounded-lg active:bg-surface-container">
+                  <span className="material-symbols-outlined text-sm">delete</span>
+                </button>
+              )}
+            </div>
           </div>
           {post.photo_url && (
             <div className="relative h-80 rounded-xl overflow-hidden">

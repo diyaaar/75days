@@ -86,9 +86,10 @@ CREATE POLICY "Users can insert own task templates." ON user_tasks FOR INSERT WI
 CREATE POLICY "Users can update own task templates." ON user_tasks FOR UPDATE USING (auth.uid() = user_id);
 CREATE POLICY "Users can delete own task templates." ON user_tasks FOR DELETE USING (auth.uid() = user_id);
 
--- Social Feed: Anyone can read, only owner can write
+-- Social Feed: Anyone can read, only owner can write/delete
 CREATE POLICY "Feed is viewable by everyone." ON social_feed FOR SELECT USING (true);
 CREATE POLICY "Users can post to feed." ON social_feed FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can delete own posts." ON social_feed FOR DELETE USING (auth.uid() = user_id);
 
 -- Friends: Only involved users can read/write
 CREATE POLICY "Users can view their friends." ON friends FOR SELECT USING (auth.uid() = user_id OR auth.uid() = friend_id);
