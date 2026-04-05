@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --font-headline: "Space Grotesk", sans-serif;
+  --font-body: "Manrope", sans-serif;
+  --font-label: "Manrope", sans-serif;
+
+  --color-primary: #f4ffc9;
+  --color-primary-container: #cefc22;
+  --color-on-primary: #526700;
+  --color-on-primary-container: #4b5e00;
+  --color-secondary: #ff734a;
+  --color-secondary-container: #b02f00;
+  --color-on-secondary: #430c00;
+  --color-on-secondary-container: #fff6f4;
+  --color-tertiary: #81ecff;
+  --color-tertiary-container: #00e3fd;
+  --color-on-tertiary: #005762;
+  --color-on-tertiary-container: #004d57;
+  --color-background: #0e0e0e;
+  --color-on-background: #ffffff;
+  --color-surface: #0e0e0e;
+  --color-on-surface: #ffffff;
+  --color-surface-variant: #262626;
+  --color-on-surface-variant: #adaaaa;
+  --color-surface-container: #1a1a1a;
+  --color-surface-container-low: #131313;
+  --color-surface-container-high: #20201f;
+  --color-surface-container-highest: #262626;
+  --color-outline: #767575;
+  --color-outline-variant: #484847;
+  --color-error: #ff7351;
+  --color-on-error: #450900;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container;
+  }
+}
+
+.grit-gradient {
+  background: radial-gradient(circle at top right, #1a1a1a 0%, #0e0e0e 100%);
+}
+
+.progress-glow {
+  box-shadow: 0 0 20px rgba(206, 252, 34, 0.3);
+}
+
+.glass-card {
+  background: rgba(26, 26, 26, 0.6);
+  backdrop-filter: blur(20px);
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

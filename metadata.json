@@ -1,0 +1,8 @@
+{
+  "name": "75 Hard Challenge",
+  "description": "A fully functional 75-day challenge app with social features, leaderboard, and real-time updates.",
+  "requestFramePermissions": [
+    "camera",
+    "notifications"
+  ]
+}
