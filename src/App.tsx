@@ -31,8 +31,14 @@ import {
   WaterDrop,
   FitnessCenter,
   MenuBook,
+  DirectionsRun,
+  SelfImprovement,
   NoFood,
   PhotoCamera,
+  RestaurantMenu,
+  Bedtime,
+  MonitorHeart,
+  Hiking,
 } from './components/Icons';
 import { Toaster, toast } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'motion/react';
@@ -42,6 +48,17 @@ import { twMerge } from 'tailwind-merge';
 // --- Utility ---
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+function urlB64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
 }
 
 // --- Types ---
@@ -83,6 +100,30 @@ interface FeedItem {
   liked_by_me: boolean;
 }
 
+interface TaskIconOption {
+  key: string;
+  label: string;
+  Icon: React.FC<{ className?: string }>;
+}
+
+const TASK_ICON_OPTIONS: TaskIconOption[] = [
+  { key: 'fitness_center', label: 'Workout', Icon: FitnessCenter },
+  { key: 'menu_book', label: 'Reading', Icon: MenuBook },
+  { key: 'no_food', label: 'Diet', Icon: NoFood },
+  { key: 'water_drop', label: 'Water', Icon: WaterDrop },
+  { key: 'photo_camera', label: 'Photo', Icon: PhotoCamera },
+  { key: 'bolt', label: 'Focus', Icon: Bolt },
+  { key: 'directions_run', label: 'Run', Icon: DirectionsRun },
+  { key: 'self_improvement', label: 'Mindset', Icon: SelfImprovement },
+  { key: 'restaurant_menu', label: 'Meals', Icon: RestaurantMenu },
+  { key: 'bedtime', label: 'Sleep', Icon: Bedtime },
+  { key: 'monitor_heart', label: 'Health', Icon: MonitorHeart },
+  { key: 'hiking', label: 'Outdoor', Icon: Hiking },
+  { key: 'check_circle', label: 'General', Icon: CheckCircle },
+];
+
+const DEFAULT_NEW_TASK_ICON = 'bolt';
+
 const DEFAULT_TASKS = [
   { task_name: '45 MIN WORKOUT (OUTDOOR)', icon: 'fitness_center', sort_order: 0 },
   { task_name: '45 MIN WORKOUT (INDOOR)', icon: 'fitness_center', sort_order: 1 },
@@ -92,14 +133,13 @@ const DEFAULT_TASKS = [
   { task_name: 'PROGRESS PHOTO', icon: 'photo_camera', sort_order: 5 },
 ];
 
-const TASK_ICON_MAP: Record<string, React.FC<{ className?: string }>> = {
-  fitness_center: FitnessCenter,
-  menu_book: MenuBook,
-  no_food: NoFood,
-  water_drop: WaterDrop,
-  photo_camera: PhotoCamera,
-  check_circle: CheckCircle,
-};
+const TASK_ICON_MAP: Record<string, React.FC<{ className?: string }>> = TASK_ICON_OPTIONS.reduce(
+  (acc, option) => {
+    acc[option.key] = option.Icon;
+    return acc;
+  },
+  {} as Record<string, React.FC<{ className?: string }>>
+);
 
 const BADGES = [
   { name: 'First Day', icon: '🌟', requirement: 1 },
@@ -208,6 +248,25 @@ const Home = ({
   const progress = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activePhotoTask, setActivePhotoTask] = useState<string | null>(null);
+  const [quote, setQuote] = useState({ text: '"The only person you are destined to become is the person you decide to be."', author: 'Ralph Waldo Emerson' });
+  const [quoteLoading, setQuoteLoading] = useState(false);
+
+  useEffect(() => {
+    const fetchQuote = async () => {
+      try {
+        setQuoteLoading(true);
+        const res = await fetch('https://api.quotable.io/random');
+        const data = await res.json();
+        setQuote({ text: `"${data.content}"`, author: data.author });
+      } catch (error) {
+        console.error('Error fetching quote:', error);
+        // Keep default quote on error
+      } finally {
+        setQuoteLoading(false);
+      }
+    };
+    fetchQuote();
+  }, []);
 
   const handlePhotoClick = (e: React.MouseEvent, taskName: string) => {
     e.stopPropagation();
@@ -323,8 +382,9 @@ const Home = ({
         <div className="absolute -right-4 -top-4 opacity-10">
           <FormatQuote className="w-24 h-24" />
         </div>
-        <p className="font-headline italic text-xl font-medium text-primary mb-2 relative z-10">"The only person you are destined to become is the person you decide to be."</p>
-        <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">- Ralph Waldo Emerson</p>
+        <p className="font-headline italic text-xl font-medium text-primary mb-2 relative z-10">{quote.text}</p>
+        <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">- {quote.author}</p>
+        {quoteLoading && <p className="text-xs text-on-surface-variant mt-2">Loading quote...</p>}
       </section>
     </motion.div>
   );
@@ -333,7 +393,7 @@ const Home = ({
 // =============================================
 // FEED COMPONENT
 // =============================================
-const Feed = ({ session }: { session: any }) => {
+const Feed = ({ session, profile }: { session: any, profile: Profile | null }) => {
   const [posts, setPosts] = useState<FeedItem[]>([]);
   const [newPostContent, setNewPostContent] = useState('');
   const [newPostPhoto, setNewPostPhoto] = useState<File | null>(null);
@@ -341,6 +401,7 @@ const Feed = ({ session }: { session: any }) => {
   const [posting, setPosting] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
 
   const fetchPosts = useCallback(async () => {
     const { data: feedData } = await supabase
@@ -407,13 +468,24 @@ const Feed = ({ session }: { session: any }) => {
         photoUrl = urlData.publicUrl;
       }
 
-      const { error } = await supabase.from('social_feed').insert({
+      const { data: insertedPost, error } = await supabase.from('social_feed').insert({
         user_id: session.user.id,
         content: newPostContent,
         type: 'manual_post',
         photo_url: photoUrl,
-      });
+      }).select().single();
       if (error) throw error;
+      
+      // Trigger push notification
+      await supabase.functions.invoke('send-push-notification', {
+        body: {
+          post_id: insertedPost.id,
+          user_id: session.user.id,
+          poster_name: profile?.username,
+          content: newPostContent
+        }
+      });
+
 
       setNewPostContent('');
       setNewPostPhoto(null);
@@ -658,7 +730,7 @@ const User = ({
   userTasks: UserTask[];
   onSignOut: () => void;
   onUpdateProfile: (updates: Partial<Profile>, avatarFile?: File) => Promise<void>;
-  onAddTask: (taskName: string) => Promise<void>;
+  onAddTask: (taskName: string, icon: string) => Promise<void>;
   onDeleteTask: (taskId: string) => Promise<void>;
 }) => {
   const [editing, setEditing] = useState(false);
@@ -666,6 +738,7 @@ const User = ({
   const [saving, setSaving] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const [newTaskName, setNewTaskName] = useState('');
+  const [newTaskIcon, setNewTaskIcon] = useState(DEFAULT_NEW_TASK_ICON);
   const [showAddTask, setShowAddTask] = useState(false);
 
   const earnedBadges = BADGES.filter((b) => profile.total_days >= b.requirement);
@@ -697,8 +770,9 @@ const User = ({
   const handleAddTask = async () => {
     if (!newTaskName.trim()) return;
     try {
-      await onAddTask(newTaskName.trim().toUpperCase());
+      await onAddTask(newTaskName.trim().toUpperCase(), newTaskIcon);
       setNewTaskName('');
+      setNewTaskIcon(DEFAULT_NEW_TASK_ICON);
       setShowAddTask(false);
       toast.success('Task added!');
     } catch (error: any) {
@@ -830,17 +904,56 @@ const User = ({
         <AnimatePresence>
           {showAddTask && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-              <div className="flex gap-2">
-                <input
-                  className="flex-1 bg-surface-container px-4 py-3 rounded-xl outline-none text-on-surface placeholder:text-on-surface-variant/50 font-headline text-sm uppercase"
-                  placeholder="New task name..."
-                  value={newTaskName}
-                  onChange={(e) => setNewTaskName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddTask()}
-                />
-                <button onClick={handleAddTask} className="bg-primary-container text-on-primary-container px-4 py-3 rounded-xl font-bold text-sm active:scale-95 transition-transform">
-                  Add
-                </button>
+              <div className="bg-surface-container-low rounded-2xl p-4 space-y-4 border border-primary-container/10">
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 bg-surface-container px-4 py-3 rounded-xl outline-none text-on-surface placeholder:text-on-surface-variant/50 font-headline text-sm uppercase"
+                    placeholder="New task name..."
+                    value={newTaskName}
+                    onChange={(e) => setNewTaskName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddTask()}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddTask}
+                    className="bg-primary-container text-on-primary-container px-4 py-3 rounded-xl font-bold text-sm active:scale-95 transition-transform disabled:opacity-40"
+                    disabled={!newTaskName.trim()}
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="font-label text-[10px] tracking-widest uppercase text-on-surface-variant">Choose Icon</p>
+                    <div className="flex items-center gap-2 text-primary-container">
+                      {React.createElement(TASK_ICON_MAP[newTaskIcon] || CheckCircle, { className: 'w-5 h-5' })}
+                      <span className="font-label text-[10px] tracking-widest uppercase">
+                        {TASK_ICON_OPTIONS.find((option) => option.key === newTaskIcon)?.label || 'General'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {TASK_ICON_OPTIONS.map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setNewTaskIcon(option.key)}
+                        className={cn(
+                          'rounded-xl p-3 border transition-all active:scale-95 flex flex-col items-center gap-1.5',
+                          newTaskIcon === option.key
+                            ? 'bg-primary-container text-on-primary-container border-primary-container shadow-[0_8px_24px_rgba(206,252,34,0.18)]'
+                            : 'bg-surface-container text-on-surface-variant border-transparent hover:text-primary-container hover:border-primary-container/20'
+                        )}
+                        aria-label={`Select ${option.label} icon`}
+                      >
+                        <option.Icon className="w-5 h-5" />
+                        <span className="font-label text-[8px] tracking-widest uppercase text-center leading-tight">
+                          {option.label}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </motion.div>
           )}
@@ -897,8 +1010,10 @@ export default function App() {
     if (session?.user) {
       loadProfile();
       loadUserTasks();
+      subscribeToPushNotifications();
     }
   }, [session]);
+
 
   // Load daily tasks when userTasks change
   useEffect(() => {
@@ -943,6 +1058,42 @@ export default function App() {
     if (data) setProfile(data);
   };
 
+  // ---- PUSH NOTIFICATIONS ----
+  const subscribeToPushNotifications = async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    
+    try {
+      const authResult = await Notification.requestPermission();
+      if (authResult !== 'granted') return;
+
+      const registration = await navigator.serviceWorker.ready;
+      
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+        if (!vapidPublicKey) return;
+        
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlB64ToUint8Array(vapidPublicKey) as any
+        });
+      }
+
+      const subData = JSON.parse(JSON.stringify(subscription));
+      
+      // Save subscription to Supabase
+      await supabase.from('push_subscriptions').upsert({
+        user_id: session.user.id,
+        endpoint: subData.endpoint,
+        p256dh: subData.keys.p256dh,
+        auth: subData.keys.auth,
+      }, { onConflict: 'user_id,endpoint' });
+      
+    } catch (error) {
+      console.error('Push subscription failed:', error);
+    }
+  };
+
   // ---- USER TASKS (challenge template) ----
   const loadUserTasks = async () => {
     const { data } = await supabase
@@ -952,7 +1103,7 @@ export default function App() {
       .order('sort_order', { ascending: true });
 
     if (data && data.length > 0) {
-      setUserTasks(data);
+      setUserTasks(data.map((task) => ({ ...task, icon: task.icon || DEFAULT_NEW_TASK_ICON })));
     } else {
       // First time: create default tasks
       const defaults = DEFAULT_TASKS.map((t) => ({ ...t, user_id: session.user.id }));
@@ -961,10 +1112,10 @@ export default function App() {
     }
   };
 
-  const addUserTask = async (taskName: string) => {
+  const addUserTask = async (taskName: string, icon: string) => {
     const { data, error } = await supabase
       .from('user_tasks')
-      .insert({ user_id: session.user.id, task_name: taskName, sort_order: userTasks.length })
+      .insert({ user_id: session.user.id, task_name: taskName, icon, sort_order: userTasks.length })
       .select()
       .single();
     if (error) throw error;
@@ -1052,12 +1203,23 @@ export default function App() {
 
       // Auto-post to feed for progress photos
       if (taskName === 'PROGRESS PHOTO') {
-        await supabase.from('social_feed').insert({
+        const { data: insertedFeed } = await supabase.from('social_feed').insert({
           user_id: session.user.id,
           content: `Day ${(profile?.total_days || 0) + 1} progress photo 💪`,
           type: 'task_complete',
           photo_url: photoUrl,
-        });
+        }).select().single();
+        
+        if (insertedFeed) {
+          supabase.functions.invoke('send-push-notification', {
+            body: {
+              post_id: insertedFeed.id,
+              user_id: session.user.id,
+              poster_name: profile?.username,
+              content: 'Progress photo 💪'
+            }
+          });
+        }
       }
     } catch (error: any) {
       toast.error(error.message);
@@ -1101,13 +1263,24 @@ export default function App() {
 
       // Post milestone to feed
       if (newStreak % 7 === 0 || newTotalDays === 75) {
-        await supabase.from('social_feed').insert({
+        const { data: insertedFeed } = await supabase.from('social_feed').insert({
           user_id: session.user.id,
           content: newTotalDays === 75
             ? `🎖️ COMPLETED 75 HARD CHALLENGE! 🎖️`
             : `🔥 ${newStreak} day streak achieved!`,
           type: 'streak_milestone',
-        });
+        }).select().single();
+        
+        if (insertedFeed) {
+          supabase.functions.invoke('send-push-notification', {
+            body: {
+              post_id: insertedFeed.id,
+              user_id: session.user.id,
+              poster_name: profile?.username,
+              content: `Milestone Achieved!`
+            }
+          });
+        }
       }
     }
   };
@@ -1170,7 +1343,7 @@ export default function App() {
           )}
           {view === 'feed' && (
             <React.Fragment key="feed">
-              <Feed session={session} />
+              <Feed session={session} profile={profile} />
             </React.Fragment>
           )}
           {view === 'rank' && (

@@ -32,6 +32,8 @@ export const MoreVert = (p: IconProps) => <Icon name="more_vert" {...p} />;
 export const WaterDrop = (p: IconProps) => <Icon name="water_drop" {...p} />;
 export const FitnessCenter = (p: IconProps) => <Icon name="fitness_center" {...p} />;
 export const MenuBook = (p: IconProps) => <Icon name="menu_book" {...p} />;
+export const DirectionsRun = (p: IconProps) => <Icon name="directions_run" {...p} />;
+export const SelfImprovement = (p: IconProps) => <Icon name="self_improvement" {...p} />;
 export const Edit = (p: IconProps) => <Icon name="edit" {...p} />;
 export const Delete = (p: IconProps) => <Icon name="delete" {...p} />;
 export const Close = (p: IconProps) => <Icon name="close" {...p} />;
@@ -44,3 +46,6 @@ export const LocalFireDepartment = (p: IconProps) => <Icon name="local_fire_depa
 export const NoFood = (p: IconProps) => <Icon name="no_food" {...p} />;
 export const PhotoCamera = (p: IconProps) => <Icon name="photo_camera" {...p} />;
 export const RestaurantMenu = (p: IconProps) => <Icon name="restaurant_menu" {...p} />;
+export const Bedtime = (p: IconProps) => <Icon name="bedtime" {...p} />;
+export const MonitorHeart = (p: IconProps) => <Icon name="monitor_heart" {...p} />;
+export const Hiking = (p: IconProps) => <Icon name="hiking" {...p} />;
