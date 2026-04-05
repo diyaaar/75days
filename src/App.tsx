@@ -362,12 +362,12 @@ const Home = ({
                   <div className="flex items-center gap-2">
                     <button
                       onClick={(e) => handlePhotoClick(e, ut.task_name)}
-                      className="p-1.5 rounded-lg bg-surface-container-highest text-on-surface-variant hover:text-primary-container transition-colors"
+                      className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-container-highest text-on-surface-variant hover:text-primary-container transition-colors"
                     >
                       <AddAPhoto className="w-5 h-5" />
                     </button>
-                    <div className={cn("p-1 rounded", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
-                      {dt.completed ? <CheckCircle className="w-6 h-6" /> : <div className="w-6 h-6 border-2 border-current rounded-full" />}
+                    <div className={cn("flex items-center justify-center w-8 h-8 rounded", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
+                      {dt.completed ? <CheckCircle className="w-5 h-5" /> : <div className="w-4 h-4 border-2 border-current rounded-full" />}
                     </div>
                   </div>
                 </div>
@@ -406,19 +406,29 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const fetchPosts = useCallback(async () => {
     const { data: feedData } = await supabase
       .from('social_feed')
-      .select('*, profiles(*)')
+      .select('*')
       .order('created_at', { ascending: false });
 
     if (!feedData) return;
+
+    // Get profile data for each post
+    const userIds = [...new Set(feedData.map((p: any) => p.user_id))];
+    const { data: profilesData } = await supabase.from('profiles').select('*').in('id', userIds);
 
     // Get like counts and user likes
     const postIds = feedData.map((p: any) => p.id);
     const { data: likesData } = await supabase.from('likes').select('post_id, user_id').in('post_id', postIds);
 
+    const profileMap = (profilesData || []).reduce((acc: any, p: any) => {
+      acc[p.id] = p;
+      return acc;
+    }, {});
+
     const enriched = feedData.map((post: any) => {
       const postLikes = (likesData || []).filter((l: any) => l.post_id === post.id);
       return {
         ...post,
+        profiles: profileMap[post.user_id],
         like_count: postLikes.length,
         liked_by_me: postLikes.some((l: any) => l.user_id === session?.user?.id),
       };
@@ -519,7 +529,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         </div>
         <button
           onClick={() => setShowCompose(!showCompose)}
-          className="bg-primary-container text-on-primary-container p-2.5 rounded-xl active:scale-95 transition-transform"
+          className="flex items-center justify-center w-10 h-10 bg-primary-container text-on-primary-container rounded-xl active:scale-95 transition-transform"
         >
           {showCompose ? <Close className="w-5 h-5" /> : <Add className="w-5 h-5" />}
         </button>
@@ -546,14 +556,14 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                   <img src={photoPreview} className="w-full h-full object-cover" alt="preview" />
                   <button
                     onClick={() => { setNewPostPhoto(null); setPhotoPreview(null); }}
-                    className="absolute top-2 right-2 bg-black/60 p-1 rounded-full"
+                    className="absolute top-2 right-2 flex items-center justify-center w-6 h-6 bg-black/60 rounded-full"
                   >
                     <Close className="w-4 h-4 text-white" />
                   </button>
                 </div>
               )}
               <div className="flex justify-between items-center">
-                <button onClick={() => fileInputRef.current?.click()} className="p-2 text-on-surface-variant hover:text-primary-container transition-colors">
+                <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors">
                   <Image className="w-5 h-5" />
                 </button>
                 <button
@@ -806,7 +816,7 @@ const User = ({
           </div>
           <button
             onClick={() => avatarInputRef.current?.click()}
-            className="absolute -bottom-1 -right-1 bg-primary-container text-on-primary-container p-1 rounded-full"
+            className="absolute -bottom-1 -right-1 flex items-center justify-center w-6 h-6 bg-primary-container text-on-primary-container rounded-full"
           >
             <CameraAlt className="w-4 h-4" />
           </button>
@@ -821,17 +831,17 @@ const User = ({
                 onChange={(e) => setEditUsername(e.target.value)}
                 autoFocus
               />
-              <button onClick={handleSaveProfile} disabled={saving} className="bg-primary-container text-on-primary-container p-2 rounded-lg">
+              <button onClick={handleSaveProfile} disabled={saving} className="flex items-center justify-center w-8 h-8 bg-primary-container text-on-primary-container rounded-lg">
                 <Save className="w-4 h-4" />
               </button>
-              <button onClick={() => setEditing(false)} className="bg-surface-container text-on-surface-variant p-2 rounded-lg">
+              <button onClick={() => setEditing(false)} className="flex items-center justify-center w-8 h-8 bg-surface-container text-on-surface-variant rounded-lg">
                 <Close className="w-4 h-4" />
               </button>
             </div>
           ) : (
             <div className="flex items-center gap-2">
               <h2 className="font-headline font-bold text-3xl tracking-tighter uppercase">{profile.username || 'OPERATOR'}</h2>
-              <button onClick={() => { setEditUsername(profile.username || ''); setEditing(true); }} className="text-on-surface-variant">
+              <button onClick={() => { setEditUsername(profile.username || ''); setEditing(true); }} className="flex items-center justify-center w-6 h-6 text-on-surface-variant hover:text-primary-container transition-colors">
                 <Edit className="w-4 h-4" />
               </button>
             </div>
@@ -896,7 +906,7 @@ const User = ({
       <section className="space-y-4">
         <div className="flex justify-between items-center">
           <h3 className="font-headline text-lg font-bold uppercase tracking-tight">My Tasks</h3>
-          <button onClick={() => setShowAddTask(!showAddTask)} className="bg-primary-container text-on-primary-container p-1.5 rounded-lg active:scale-95 transition-transform">
+          <button onClick={() => setShowAddTask(!showAddTask)} className="flex items-center justify-center w-8 h-8 bg-primary-container text-on-primary-container rounded-lg active:scale-95 transition-transform">
             {showAddTask ? <Close className="w-4 h-4" /> : <Add className="w-4 h-4" />}
           </button>
         </div>
@@ -968,7 +978,7 @@ const User = ({
                 </div>
                 <span className="font-headline font-bold text-sm uppercase">{task.task_name}</span>
               </div>
-              <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="text-on-surface-variant hover:text-error transition-colors p-1">
+              <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="flex items-center justify-center w-6 h-6 text-on-surface-variant hover:text-error transition-colors">
                 <Delete className="w-5 h-5" />
               </button>
             </div>
