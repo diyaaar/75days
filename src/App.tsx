@@ -255,9 +255,9 @@ const Home = ({
     const fetchQuote = async () => {
       try {
         setQuoteLoading(true);
-        const res = await fetch('https://api.quotable.io/random');
+        const res = await fetch('https://zenquotes.io/api/random');
         const data = await res.json();
-        setQuote({ text: `"${data.content}"`, author: data.author });
+        setQuote({ text: `"${data[0].q}"`, author: data[0].a });
       } catch (error) {
         console.error('Error fetching quote:', error);
         // Keep default quote on error
