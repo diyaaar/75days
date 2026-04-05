@@ -296,7 +296,7 @@ const Home = ({
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
-      <input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handleFileChange} />
+      <input type="file" ref={fileInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleFileChange} />
 
       {/* Progress Ring */}
       <section className="text-center">
@@ -510,7 +510,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-      <input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handlePhotoSelect} />
+      <input type="file" ref={fileInputRef} accept="image/*" capture="environment" className="hidden" onChange={handlePhotoSelect} />
 
       <div className="flex justify-between items-end">
         <div className="space-y-1">
