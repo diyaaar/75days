@@ -62,7 +62,7 @@ function urlB64ToUint8Array(base64String: string): Uint8Array {
 }
 
 // --- Types ---
-type View = 'home' | 'feed' | 'rank' | 'user';
+type View = 'home' | 'feed' | 'rank' | 'user' | 'history';
 
 interface Profile {
   id: string;
@@ -228,6 +228,200 @@ const Auth = () => {
 };
 
 // =============================================
+// PHOTO MODAL COMPONENT
+// =============================================
+const PhotoModal = ({
+  taskName,
+  isOpen,
+  onClose,
+  onCapture,
+  onUpload,
+}: {
+  taskName: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onCapture: () => void;
+  onUpload: () => void;
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <motion.div
+      initial={{ y: 400 }}
+      animate={{ y: 0 }}
+      exit={{ y: 400 }}
+      className="fixed bottom-0 left-0 right-0 w-full bg-surface-container rounded-t-3xl p-6 space-y-4 z-50"
+    >
+        <h3 className="font-headline text-lg font-bold text-on-surface text-center mb-6">{taskName}</h3>
+
+        <button
+          onClick={onCapture}
+          className="w-full flex items-center justify-center gap-3 bg-primary-container text-on-primary-container font-headline font-bold py-4 rounded-xl active:scale-95 transition-transform"
+        >
+          <CameraAlt className="w-5 h-5" />
+          Camera
+        </button>
+
+        <button
+          onClick={onUpload}
+          className="w-full flex items-center justify-center gap-3 bg-secondary-container text-on-secondary-container font-headline font-bold py-4 rounded-xl active:scale-95 transition-transform"
+        >
+          <Image className="w-5 h-5" />
+          Upload Photo
+        </button>
+
+        <button
+          onClick={onClose}
+          className="w-full flex items-center justify-center gap-3 bg-surface-container-highest text-on-surface-variant font-headline font-bold py-4 rounded-xl active:scale-95 transition-transform"
+        >
+          <Close className="w-5 h-5" />
+          Skip For Now
+        </button>
+    </motion.div>
+  );
+};
+
+// =============================================
+// HISTORY COMPONENT
+// =============================================
+const History = ({
+  session,
+  userTasks,
+  profile,
+}: {
+  session: any;
+  userTasks: UserTask[];
+  profile: Profile | null;
+}) => {
+  const [historyDays, setHistoryDays] = useState<
+    Array<{ date: string; tasks: DailyTask[]; completed: boolean }>
+  >([]);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const loadHistory = async () => {
+    try {
+      const startDate = profile?.challenge_start_date
+        ? new Date(profile.challenge_start_date)
+        : new Date();
+      startDate.setDate(startDate.getDate() - 30);
+
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + 1);
+
+      const { data } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .gte('date', startDate.toISOString().split('T')[0])
+        .lte('date', endDate.toISOString().split('T')[0])
+        .order('date', { ascending: false });
+
+      const grouped: Record<string, DailyTask[]> = {};
+      data?.forEach((task: any) => {
+        if (!grouped[task.date]) grouped[task.date] = [];
+        grouped[task.date].push({
+          id: task.id,
+          task_name: task.task_name,
+          completed: task.completed,
+          photo_url: task.photo_url,
+        });
+      });
+
+      const historyArray = Object.entries(grouped)
+        .map(([date, tasks]) => ({
+          date,
+          tasks,
+          completed: tasks.length >= userTasks.length && tasks.every((t) => t.completed),
+        }))
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      setHistoryDays(historyArray);
+    } catch (error: any) {
+      toast.error('Failed to load history');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr + 'T00:00:00');
+    return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+      <h2 className="font-headline text-3xl font-bold tracking-tight uppercase">Challenge History</h2>
+
+      {loading ? (
+        <div className="text-center py-12 text-on-surface-variant">Loading history...</div>
+      ) : historyDays.length === 0 ? (
+        <div className="text-center py-12 text-on-surface-variant">No tasks recorded yet</div>
+      ) : (
+        <div className="space-y-3">
+          {historyDays.map((day) => (
+            <div key={day.date} className="space-y-2">
+              <button
+                onClick={() => setSelectedDate(selectedDate === day.date ? null : day.date)}
+                className={cn(
+                  'w-full p-4 rounded-xl text-left transition-all',
+                  day.completed
+                    ? 'bg-primary-container/20 border-l-4 border-primary-container'
+                    : 'bg-surface-container border-l-4 border-surface-container-highest',
+                  selectedDate === day.date && 'ring-2 ring-primary-container'
+                )}
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="font-headline font-bold text-on-surface">{formatDate(day.date)}</p>
+                    <p className="text-sm text-on-surface-variant">
+                      {day.tasks.filter((t) => t.completed).length}/{day.tasks.length} completed
+                    </p>
+                  </div>
+                  {day.completed && <span className="text-2xl">✅</span>}
+                </div>
+              </button>
+
+              {selectedDate === day.date && (
+                <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} className="space-y-2 ml-2">
+                  {day.tasks.map((task) => (
+                    <div
+                      key={task.task_name}
+                      className={cn(
+                        'p-3 rounded-lg border-l-2',
+                        task.completed
+                          ? 'bg-surface-container-highest border-primary-container'
+                          : 'bg-surface-container border-surface-container-highest'
+                      )}
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-on-surface">{task.task_name}</p>
+                          {task.photo_url && (
+                            <div className="mt-2 w-20 h-20 rounded-lg overflow-hidden">
+                              <img src={task.photo_url} className="w-full h-full object-cover" alt="task" />
+                            </div>
+                          )}
+                        </div>
+                        {task.completed && <span className="text-lg">✓</span>}
+                      </div>
+                    </div>
+                  ))}
+                </motion.div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+};
+
+// =============================================
 // HOME COMPONENT
 // =============================================
 const Home = ({
@@ -247,21 +441,49 @@ const Home = ({
   const completedCount = dailyTasks.filter((t) => t.completed).length;
   const progress = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activePhotoTask, setActivePhotoTask] = useState<string | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
+  const [selectedTaskForPhoto, setSelectedTaskForPhoto] = useState<string | null>(null);
 
-  const handlePhotoClick = (e: React.MouseEvent, taskName: string) => {
-    e.stopPropagation();
-    setActivePhotoTask(taskName);
+  const handleTaskClick = (taskName: string) => {
+    setSelectedTaskForPhoto(taskName);
+    setIsPhotoModalOpen(true);
+  };
+
+  const handleSkipPhoto = () => {
+    if (selectedTaskForPhoto) {
+      onToggleTask(selectedTaskForPhoto);
+    }
+    setIsPhotoModalOpen(false);
+    setSelectedTaskForPhoto(null);
+  };
+
+  const handleCameraCapture = () => {
+    cameraInputRef.current?.click();
+  };
+
+  const handleFileUpload = () => {
     fileInputRef.current?.click();
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && activePhotoTask) {
-      onUploadTaskPhoto(activePhotoTask, file);
-      setActivePhotoTask(null);
+    if (file && selectedTaskForPhoto) {
+      onUploadTaskPhoto(selectedTaskForPhoto, file);
+      setIsPhotoModalOpen(false);
+      setSelectedTaskForPhoto(null);
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleCameraChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && selectedTaskForPhoto) {
+      onUploadTaskPhoto(selectedTaskForPhoto, file);
+      setIsPhotoModalOpen(false);
+      setSelectedTaskForPhoto(null);
+    }
+    if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
 
   const getTaskIcon = (taskName: string) => {
@@ -277,7 +499,8 @@ const Home = ({
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
-      <input type="file" ref={fileInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleFileChange} />
+      <input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handleFileChange} />
+      <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handleCameraChange} />
 
       {/* Progress Ring */}
       <section className="text-center">
@@ -319,7 +542,7 @@ const Home = ({
             return (
               <div
                 key={ut.task_name}
-                onClick={() => onToggleTask(ut.task_name)}
+                onClick={() => handleTaskClick(ut.task_name)}
                 className={cn(
                   "surface-container p-5 rounded-xl transition-all active:scale-[0.98] cursor-pointer border-l-4",
                   dt.completed ? "border-primary-container" : "border-transparent"
@@ -340,16 +563,8 @@ const Home = ({
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={(e) => handlePhotoClick(e, ut.task_name)}
-                      className="task-photo-btn"
-                    >
-                      <AddAPhoto className="w-5 h-5" />
-                    </button>
-                    <div className={cn("task-checkbox-btn", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
-                      {dt.completed ? <CheckCircle className="w-5 h-5" /> : <div className="w-4 h-4 border-2 border-current rounded-full" />}
-                    </div>
+                  <div className={cn("task-checkbox-btn", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
+                    {dt.completed ? <CheckCircle className="w-5 h-5" /> : <div className="w-4 h-4 border-2 border-current rounded-full" />}
                   </div>
                 </div>
               </div>
@@ -358,6 +573,25 @@ const Home = ({
         </div>
       </section>
 
+      <PhotoModal
+        taskName={selectedTaskForPhoto || ''}
+        isOpen={isPhotoModalOpen}
+        onClose={() => {
+          setIsPhotoModalOpen(false);
+          setSelectedTaskForPhoto(null);
+        }}
+        onCapture={handleCameraCapture}
+        onUpload={handleFileUpload}
+      />
+
+      <AnimatePresence>
+        {isPhotoModalOpen && (
+          <div className="fixed inset-0 bg-black/50" onClick={() => {
+            setIsPhotoModalOpen(false);
+            setSelectedTaskForPhoto(null);
+          }} />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };
@@ -1434,12 +1668,22 @@ export default function App() {
               />
             </React.Fragment>
           )}
+          {view === 'history' && (
+            <React.Fragment key="history">
+              <History
+                session={session}
+                userTasks={userTasks}
+                profile={profile}
+              />
+            </React.Fragment>
+          )}
         </AnimatePresence>
       </main>
 
-      <nav className="fixed bottom-0 left-0 w-full flex justify-around items-center px-4 py-3 bg-[#131313]/90 backdrop-blur-xl z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
+      <nav className="fixed bottom-0 left-0 w-full flex justify-around items-center px-2 py-3 bg-[#131313]/90 backdrop-blur-xl z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
         <NavItem active={view === 'home'} onClick={() => setView('home')} icon={<Bolt className="w-6 h-6" />} label="HOME" />
         <NavItem active={view === 'feed'} onClick={() => setView('feed')} icon={<Groups className="w-6 h-6" />} label="FEED" />
+        <NavItem active={view === 'history'} onClick={() => setView('history')} icon={<CalendarToday className="w-6 h-6" />} label="HISTORY" />
         <NavItem active={view === 'rank'} onClick={() => setView('rank')} icon={<Leaderboard className="w-6 h-6" />} label="RANK" />
         <NavItem active={view === 'user'} onClick={() => setView('user')} icon={<Person className="w-6 h-6" />} label="USER" />
       </nav>
