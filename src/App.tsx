@@ -12,7 +12,6 @@ import {
   Person,
   CheckCircle,
   AddAPhoto,
-  FormatQuote,
   Add,
   Favorite,
   FavoriteBorder,
@@ -249,25 +248,6 @@ const Home = ({
   const progress = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activePhotoTask, setActivePhotoTask] = useState<string | null>(null);
-  const [quote, setQuote] = useState({ text: '"The only person you are destined to become is the person you decide to be."', author: 'Ralph Waldo Emerson' });
-  const [quoteLoading, setQuoteLoading] = useState(false);
-
-  useEffect(() => {
-    const fetchQuote = async () => {
-      try {
-        setQuoteLoading(true);
-        const res = await fetch('https://zenquotes.io/api/random');
-        const data = await res.json();
-        setQuote({ text: `"${data[0].q}"`, author: data[0].a });
-      } catch (error) {
-        console.error('Error fetching quote:', error);
-        // Keep default quote on error
-      } finally {
-        setQuoteLoading(false);
-      }
-    };
-    fetchQuote();
-  }, []);
 
   const handlePhotoClick = (e: React.MouseEvent, taskName: string) => {
     e.stopPropagation();
@@ -378,15 +358,6 @@ const Home = ({
         </div>
       </section>
 
-      {/* Quote */}
-      <section className="glass-card p-6 rounded-2xl border border-white/5 relative overflow-hidden">
-        <div className="absolute -right-4 -top-4 opacity-10">
-          <FormatQuote className="w-24 h-24" />
-        </div>
-        <p className="font-headline italic text-xl font-medium text-primary mb-2 relative z-10">{quote.text}</p>
-        <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">- {quote.author}</p>
-        {quoteLoading && <p className="text-xs text-on-surface-variant mt-2">Loading quote...</p>}
-      </section>
     </motion.div>
   );
 };
