@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>75 Hard Challenge</title>
     <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <meta name="theme-color" content="#0e0e0e" />
-    <link rel="apple-touch-icon" href="https://cefc22.com/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
     
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;800;900&family=Manrope:wght@200;300;400;500;600;700;800&display=swap" rel="stylesheet" />
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
@@ -17,6 +18,15 @@
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
+          const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+
+          if (isLocalhost) {
+            navigator.serviceWorker.getRegistrations().then((registrations) => {
+              registrations.forEach((registration) => registration.unregister());
+            });
+            return;
+          }
+
           navigator.serviceWorker.register('/sw.js').then(registration => {
             console.log('SW registered: ', registration);
           }).catch(registrationError => {
@@ -27,4 +37,3 @@
     </script>
   </body>
 </html>
-
