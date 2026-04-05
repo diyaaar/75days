@@ -1,12 +1,9 @@
-const CACHE_NAME = '75hard-v2';
+const CACHE_NAME = '75hard-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/icon.svg',
-  '/src/main.tsx',
-  '/src/App.tsx',
-  '/src/index.css'
+  '/icon.svg'
 ];
 
 self.addEventListener('install', (event) => {
