@@ -49,3 +49,8 @@ export const RestaurantMenu = (p: IconProps) => <Icon name="restaurant_menu" {..
 export const Bedtime = (p: IconProps) => <Icon name="bedtime" {...p} />;
 export const MonitorHeart = (p: IconProps) => <Icon name="monitor_heart" {...p} />;
 export const Hiking = (p: IconProps) => <Icon name="hiking" {...p} />;
+export const Psychology = (p: IconProps) => <Icon name="psychology" {...p} />;
+export const Park = (p: IconProps) => <Icon name="park" {...p} />;
+export const Spa = (p: IconProps) => <Icon name="spa" {...p} />;
+export const TaskAlt = (p: IconProps) => <Icon name="task_alt" {...p} />;
+export const CenterFocusStrong = (p: IconProps) => <Icon name="center_focus_strong" {...p} />;
