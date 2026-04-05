@@ -1008,21 +1008,21 @@ const User = ({
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed bottom-0 left-0 right-0 bg-surface-container rounded-t-3xl max-h-[85vh] overflow-y-auto z-50 p-6 overscroll-contain safe-bottom"
+              className="fixed bottom-0 left-0 right-0 bg-surface-container rounded-t-3xl max-h-[85vh] overflow-y-auto z-50 p-6 safe-bottom"
             >
               <div className="w-12 h-1 bg-on-surface-variant/20 rounded-full mx-auto mb-6" />
-              
-              <div className="flex justify-between items-start mb-6">
+
+              <div className="flex justify-between items-start mb-6 sticky top-0 bg-surface-container z-10">
                 <div>
                   <h3 className="font-headline text-2xl font-black uppercase tracking-tight text-on-surface">Rozetler & Askeri Nişan</h3>
                   <p className="font-label text-[10px] tracking-widest text-primary-container mt-1 uppercase">Sistem Nasıl İşler?</p>
                 </div>
-                <button onClick={() => setShowBadgeHelp(false)} className="bg-surface-container-low text-on-surface-variant p-2 rounded-full">
+                <button onClick={() => setShowBadgeHelp(false)} className="bg-surface-container-low text-on-surface-variant p-2 rounded-full flex-shrink-0">
                   <Close className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="space-y-6 text-on-surface-variant text-sm leading-relaxed pb-8">
+              <div className="space-y-6 text-on-surface-variant text-sm leading-relaxed pb-32">
                 <p>
                   Uygulamadaki <strong>Military Tech (Askeri Nişan)</strong> ikonunun yanındaki sayı, bugüne kadar tüm görevlerinizi başarıyla tamamladığınız gün sayısına <span className="text-on-surface font-black">(Total Days)</span> göre The Challenge Rozetleri'nden kaç tanesini kazandığınızı gösterir.
                 </p>
@@ -1031,9 +1031,24 @@ const User = ({
                   <h4 className="font-headline font-bold text-on-surface mb-2 uppercase text-xs tracking-widest">Nasıl Hesaplanır?</h4>
                   <ul className="list-disc pl-5 space-y-2 marker:text-primary-container">
                     <li>Günlük listesindeki <strong>tüm</strong> görevlerinizi işaretlediğinizde gün bitmiş sayılır ve <strong>Total Days</strong> sayınız 1 artar.</li>
-                    <li>Toplam başarılı olduğunuz gün sayısı belirli dönüm noktalarına ulaştığında (1. Gün, 7. Gün, 14. Gün vb.) sistem size otomatik olarak yeni bir rozet takdim eder.</li>
+                    <li>Toplam başarılı olduğunuz gün sayısı belirli dönüm noktalarına ulaştığında sistem size otomatik olarak yeni bir rozet takdim eder.</li>
                     <li>Tüm görevleri yapmakta fire verirseniz (Streak - Seriniz bozularak 0'lansa bile) bu rozetler sizde kalır çünkü tecrübeyi simgeler.</li>
                   </ul>
+                </div>
+
+                <div className="bg-surface-container-low p-4 rounded-2xl border border-primary-container/10">
+                  <h4 className="font-headline font-bold text-on-surface mb-4 uppercase text-xs tracking-widest">Rozet Seviyeleri</h4>
+                  <div className="space-y-3">
+                    {BADGES.map((badge) => (
+                      <div key={badge.name} className="flex items-center gap-3 pb-3 border-b border-primary-container/10 last:border-b-0 last:pb-0">
+                        <span className="text-2xl">{badge.icon}</span>
+                        <div>
+                          <p className="font-bold text-on-surface text-sm">{badge.name}</p>
+                          <p className="text-xs text-on-surface-variant">{badge.requirement}. günde kazanılır</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </motion.div>
