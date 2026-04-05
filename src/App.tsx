@@ -39,6 +39,7 @@ import {
   Bedtime,
   MonitorHeart,
   Hiking,
+  HelpOutline,
 } from './components/Icons';
 import { Toaster, toast } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'motion/react';
@@ -362,11 +363,11 @@ const Home = ({
                   <div className="flex items-center gap-2">
                     <button
                       onClick={(e) => handlePhotoClick(e, ut.task_name)}
-                      className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-container-highest text-on-surface-variant hover:text-primary-container transition-colors"
+                      className="task-photo-btn"
                     >
                       <AddAPhoto className="w-5 h-5" />
                     </button>
-                    <div className={cn("flex items-center justify-center w-8 h-8 rounded", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
+                    <div className={cn("task-checkbox-btn", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
                       {dt.completed ? <CheckCircle className="w-5 h-5" /> : <div className="w-4 h-4 border-2 border-current rounded-full" />}
                     </div>
                   </div>
@@ -541,7 +542,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         </div>
         <button
           onClick={() => setShowCompose(!showCompose)}
-          className="flex items-center justify-center w-10 h-10 bg-primary-container text-on-primary-container rounded-xl active:scale-95 transition-transform"
+          className="icon-button w-10 h-10 bg-primary-container text-on-primary-container rounded-xl active:scale-95 transition-transform"
         >
           {showCompose ? <Close className="w-5 h-5" /> : <Add className="w-5 h-5" />}
         </button>
@@ -568,14 +569,14 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                   <img src={photoPreview} className="w-full h-full object-cover" alt="preview" />
                   <button
                     onClick={() => { setNewPostPhoto(null); setPhotoPreview(null); }}
-                    className="absolute top-2 right-2 flex items-center justify-center w-6 h-6 bg-black/60 rounded-full"
+                    className="absolute top-2 right-2 icon-button w-6 h-6 bg-black/60 rounded-full"
                   >
                     <Close className="w-4 h-4 text-white" />
                   </button>
                 </div>
               )}
               <div className="flex justify-between items-center">
-                <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors">
+                <button onClick={() => fileInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors">
                   <Image className="w-5 h-5" />
                 </button>
                 <button
@@ -620,7 +621,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                 </div>
               )}
               {post.user_id === session.user.id && (
-                <button onClick={() => handleDeletePost(post.id)} className="text-on-surface-variant hover:text-error transition-colors p-1 rounded-lg active:bg-surface-container">
+                <button onClick={() => handleDeletePost(post.id)} className="icon-button text-on-surface-variant hover:text-error transition-colors p-1 rounded-lg active:bg-surface-container">
                   <span className="material-symbols-outlined text-sm">delete</span>
                 </button>
               )}
@@ -769,6 +770,7 @@ const User = ({
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskIcon, setNewTaskIcon] = useState(DEFAULT_NEW_TASK_ICON);
   const [showAddTask, setShowAddTask] = useState(false);
+  const [showBadgeHelp, setShowBadgeHelp] = useState(false);
 
   const earnedBadges = BADGES.filter((b) => profile.total_days >= b.requirement);
 
@@ -835,7 +837,7 @@ const User = ({
           </div>
           <button
             onClick={() => avatarInputRef.current?.click()}
-            className="absolute -bottom-1 -right-1 flex items-center justify-center w-6 h-6 bg-primary-container text-on-primary-container rounded-full"
+            className="avatar-camera-btn"
           >
             <CameraAlt className="w-4 h-4" />
           </button>
@@ -850,17 +852,17 @@ const User = ({
                 onChange={(e) => setEditUsername(e.target.value)}
                 autoFocus
               />
-              <button onClick={handleSaveProfile} disabled={saving} className="flex items-center justify-center w-8 h-8 bg-primary-container text-on-primary-container rounded-lg">
+              <button onClick={handleSaveProfile} disabled={saving} className="icon-button w-8 h-8 bg-primary-container text-on-primary-container rounded-lg">
                 <Save className="w-4 h-4" />
               </button>
-              <button onClick={() => setEditing(false)} className="flex items-center justify-center w-8 h-8 bg-surface-container text-on-surface-variant rounded-lg">
+              <button onClick={() => setEditing(false)} className="icon-button w-8 h-8 bg-surface-container text-on-surface-variant rounded-lg">
                 <Close className="w-4 h-4" />
               </button>
             </div>
           ) : (
             <div className="flex items-center gap-2">
               <h2 className="font-headline font-bold text-3xl tracking-tighter uppercase">{profile.username || 'OPERATOR'}</h2>
-              <button onClick={() => { setEditUsername(profile.username || ''); setEditing(true); }} className="flex items-center justify-center w-6 h-6 text-on-surface-variant hover:text-primary-container transition-colors">
+              <button onClick={() => { setEditUsername(profile.username || ''); setEditing(true); }} className="icon-button w-6 h-6 text-on-surface-variant hover:text-primary-container transition-colors">
                 <Edit className="w-4 h-4" />
               </button>
             </div>
@@ -890,8 +892,13 @@ const User = ({
           </div>
           <div className="bg-surface-container-low p-4 rounded-xl flex items-center justify-between">
             <div>
+              <div className="flex items-center gap-1 mb-1">
+                <p className="font-label text-[10px] tracking-widest text-on-surface-variant uppercase">Badges</p>
+                <button onClick={() => setShowBadgeHelp(true)} className="text-on-surface-variant hover:text-on-surface p-0.5 rounded-full bg-surface-container/50">
+                  <span className="material-symbols-outlined text-[14px]">help</span>
+                </button>
+              </div>
               <p className="font-headline font-bold text-xl text-on-surface">{earnedBadges.length}</p>
-              <p className="font-label text-[10px] tracking-widest text-on-surface-variant uppercase">Badges</p>
             </div>
             <MilitaryTech className="w-5 h-5 text-tertiary" />
           </div>
@@ -925,7 +932,7 @@ const User = ({
       <section className="space-y-4">
         <div className="flex justify-between items-center">
           <h3 className="font-headline text-lg font-bold uppercase tracking-tight">My Tasks</h3>
-          <button onClick={() => setShowAddTask(!showAddTask)} className="flex items-center justify-center w-8 h-8 bg-primary-container text-on-primary-container rounded-lg active:scale-95 transition-transform">
+          <button onClick={() => setShowAddTask(!showAddTask)} className="icon-button w-8 h-8 bg-primary-container text-on-primary-container rounded-lg active:scale-95 transition-transform">
             {showAddTask ? <Close className="w-4 h-4" /> : <Add className="w-4 h-4" />}
           </button>
         </div>
@@ -997,7 +1004,7 @@ const User = ({
                 </div>
                 <span className="font-headline font-bold text-sm uppercase">{task.task_name}</span>
               </div>
-              <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="flex items-center justify-center w-6 h-6 text-on-surface-variant hover:text-error transition-colors">
+              <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="icon-button w-6 h-6 text-on-surface-variant hover:text-error transition-colors">
                 <Delete className="w-5 h-5" />
               </button>
             </div>
@@ -1013,6 +1020,55 @@ const User = ({
         <Logout className="w-5 h-5" />
         Sign Out
       </button>
+
+      {/* Badge Help Bottom Sheet */}
+      <AnimatePresence>
+        {showBadgeHelp && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowBadgeHelp(false)}
+              className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed bottom-0 left-0 right-0 bg-surface-container rounded-t-3xl max-h-[85vh] overflow-y-auto z-50 p-6 overscroll-contain safe-bottom"
+            >
+              <div className="w-12 h-1 bg-on-surface-variant/20 rounded-full mx-auto mb-6" />
+              
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <h3 className="font-headline text-2xl font-black uppercase tracking-tight text-on-surface">Rozetler & Askeri Nişan</h3>
+                  <p className="font-label text-[10px] tracking-widest text-primary-container mt-1 uppercase">Sistem Nasıl İşler?</p>
+                </div>
+                <button onClick={() => setShowBadgeHelp(false)} className="bg-surface-container-low text-on-surface-variant p-2 rounded-full">
+                  <Close className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-6 text-on-surface-variant text-sm leading-relaxed pb-8">
+                <p>
+                  Uygulamadaki <strong>Military Tech (Askeri Nişan)</strong> ikonunun yanındaki sayı, bugüne kadar tüm görevlerinizi başarıyla tamamladığınız gün sayısına <span className="text-on-surface font-black">(Total Days)</span> göre The Challenge Rozetleri'nden kaç tanesini kazandığınızı gösterir.
+                </p>
+
+                <div className="bg-surface-container-low p-4 rounded-2xl border border-primary-container/10">
+                  <h4 className="font-headline font-bold text-on-surface mb-2 uppercase text-xs tracking-widest">Nasıl Hesaplanır?</h4>
+                  <ul className="list-disc pl-5 space-y-2 marker:text-primary-container">
+                    <li>Günlük listesindeki <strong>tüm</strong> görevlerinizi işaretlediğinizde gün bitmiş sayılır ve <strong>Total Days</strong> sayınız 1 artar.</li>
+                    <li>Toplam başarılı olduğunuz gün sayısı belirli dönüm noktalarına ulaştığında (1. Gün, 7. Gün, 14. Gün vb.) sistem size otomatik olarak yeni bir rozet takdim eder.</li>
+                    <li>Tüm görevleri yapmakta fire verirseniz (Streak - Seriniz bozularak 0'lansa bile) bu rozetler sizde kalır çünkü tecrübeyi simgeler.</li>
+                  </ul>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };

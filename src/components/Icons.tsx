@@ -54,3 +54,4 @@ export const Park = (p: IconProps) => <Icon name="park" {...p} />;
 export const Spa = (p: IconProps) => <Icon name="spa" {...p} />;
 export const TaskAlt = (p: IconProps) => <Icon name="task_alt" {...p} />;
 export const CenterFocusStrong = (p: IconProps) => <Icon name="center_focus_strong" {...p} />;
+export const HelpOutline = (p: IconProps) => <Icon name="help_outline" {...p} />;

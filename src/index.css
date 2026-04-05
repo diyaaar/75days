@@ -37,6 +37,20 @@
   body {
     @apply bg-background text-on-background font-body selection:bg-primary-container selection:text-on-primary-container;
   }
+
+  .material-symbols-outlined {
+    font-family: 'Material Symbols Outlined';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    display: inline-flex;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: normal;
+    word-wrap: normal;
+    white-space: nowrap;
+    direction: ltr;
+  }
 }
 
 .grit-gradient {
@@ -58,4 +72,69 @@
 .scrollbar-hide {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Icon Button Styling */
+.icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.icon-button .material-symbols-outlined {
+  font-size: inherit;
+  width: 1em;
+  height: 1em;
+}
+
+/* Task Photo Button - 32px button with 20px icon centered */
+.task-photo-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.75rem;
+  @apply flex items-center justify-center;
+  @apply bg-surface-container-highest text-on-surface-variant;
+  @apply hover:text-primary-container transition-colors;
+}
+
+.task-photo-btn .material-symbols-outlined {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+/* Avatar Camera Button - 24px button with 16px icon centered */
+.avatar-camera-btn {
+  position: absolute;
+  bottom: -0.25rem;
+  right: -0.25rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  @apply flex items-center justify-center;
+  @apply bg-primary-container text-on-primary-container;
+  outline: 2px solid #0e0e0e;
+  outline-offset: 0;
+}
+
+.avatar-camera-btn .material-symbols-outlined {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+/* Task Completion Checkbox Button */
+.task-checkbox-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.375rem;
+  @apply flex items-center justify-center;
+}
+
+.task-checkbox-btn .material-symbols-outlined {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
 }
