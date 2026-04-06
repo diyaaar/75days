@@ -86,6 +86,7 @@ interface DailyTask {
   task_name: string;
   completed: boolean;
   photo_url?: string;
+  completed_at?: string;
 }
 
 interface FeedItem {
@@ -301,23 +302,27 @@ type HistoryDay = {
   isMissed: boolean;
   isToday: boolean;
   streakRunLength?: number;
+  streakDay?: number;
+  isCurrentStreak?: boolean;
 };
 
 const History = ({
   session,
   profile,
+  userTasks,
 }: {
   session: any;
   profile: Profile | null;
+  userTasks: UserTask[];
 }) => {
   const [historyDays, setHistoryDays] = useState<HistoryDay[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lightbox, setLightbox] = useState<{ url: string; label: string } | null>(null);
+  const [lightbox, setLightbox] = useState<{ url: string; label: string; dayLabel?: string } | null>(null);
 
   useEffect(() => {
     loadHistory();
-  }, []);
+  }, [userTasks]);
 
   const loadHistory = async () => {
     try {
@@ -349,8 +354,25 @@ const History = ({
           task_name: task.task_name,
           completed: task.completed,
           photo_url: task.photo_url,
+          completed_at: task.completed_at,
         });
       });
+
+      // Bugün → userTasks şablonu + DB merge, geçmiş → sadece DB kayıtları
+      const mergeTasks = (dbTasks: DailyTask[], isToday: boolean, isPast: boolean): DailyTask[] => {
+        if (isPast && dbTasks.length === 0) return [];
+        // Geçmiş günler: sadece o gün DB'de ne varsa onu göster
+        if (isPast) return dbTasks;
+        // Bugün: şablonu DB ile birleştir
+        const merged = userTasks.map((ut) => {
+          const dbTask = dbTasks.find((dt) => dt.task_name === ut.task_name);
+          return dbTask || { task_name: ut.task_name, completed: false };
+        });
+        dbTasks.forEach((dt) => {
+          if (!merged.find((t) => t.task_name === dt.task_name)) merged.push(dt);
+        });
+        return merged;
+      };
 
       // Challenge başından bugüne her günü üret
       const todayStr = new Date().toISOString().split('T')[0];
@@ -360,7 +382,10 @@ const History = ({
 
       while (cursor < endDate) {
         const dateStr = cursor.toISOString().split('T')[0];
-        const tasks = grouped[dateStr] || [];
+        const dbTasks = grouped[dateStr] || [];
+        const isToday = dateStr === todayStr;
+        const isPast = dateStr < todayStr;
+        const tasks = mergeTasks(dbTasks, isToday, isPast);
         const dayNumber =
           Math.round((cursor.getTime() - challengeStart.getTime()) / 86400000) + 1;
         allDays.push({
@@ -368,29 +393,53 @@ const History = ({
           tasks,
           completed: tasks.length > 0 && tasks.every((t) => t.completed),
           dayNumber: Math.max(1, dayNumber),
-          isMissed: tasks.length === 0 && dateStr < todayStr,
-          isToday: dateStr === todayStr,
+          isMissed: tasks.length === 0 && isPast,
+          isToday,
         });
         cursor.setDate(cursor.getDate() + 1);
       }
 
-      // Yeniden eskiye sırala
-      allDays.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-      // Streak koşularını tespit et ve annotation ekle (descending sırada)
+      // Streak hesaplama (ascending sırada)
+      // Pass 1: Her completed gün + bugün için streakDay hesapla
       allDays.forEach((day, idx) => {
+        if (!day.completed && !day.isToday) return;
+        const prev = idx > 0 ? allDays[idx - 1] : null;
+        if (prev && prev.streakDay && prev.completed) {
+          day.streakDay = prev.streakDay + 1;
+        } else {
+          day.streakDay = 1;
+        }
+      });
+
+      // Pass 2: Aktif streak'i işaretle (bugünden geriye doğru yürü)
+      const todayIdx = allDays.findIndex((d) => d.isToday);
+      if (todayIdx >= 0 && allDays[todayIdx].streakDay) {
+        allDays[todayIdx].isCurrentStreak = true;
+        for (let i = todayIdx - 1; i >= 0; i--) {
+          if (allDays[i].completed && allDays[i].streakDay) {
+            allDays[i].isCurrentStreak = true;
+          } else break;
+        }
+      }
+
+      // Pass 3: streakRunLength (eski streak badge desteği, descending'den)
+      const desc = [...allDays].sort((a, b) => b.date.localeCompare(a.date));
+      desc.forEach((day, idx) => {
         if (!day.completed) return;
-        const prevDay = allDays[idx - 1]; // daha yeni gün
+        const prevDay = desc[idx - 1];
         const isRunStart = !prevDay || !prevDay.completed;
         if (isRunStart) {
           let len = 0;
-          for (let j = idx; j < allDays.length; j++) {
-            if (allDays[j].completed) len++;
+          for (let j = idx; j < desc.length; j++) {
+            if (desc[j].completed) len++;
             else break;
           }
           if (len > 1) day.streakRunLength = len;
         }
       });
+
+      // Yeniden eskiye sırala (UI descending gösterim için)
+      allDays.sort((a, b) => b.date.localeCompare(a.date));
 
       setHistoryDays(allDays);
     } catch (error: any) {
@@ -411,180 +460,309 @@ const History = ({
   const trackedDays = historyDays.filter((d) => !d.isMissed && !d.isToday).length;
   const rate = trackedDays > 0 ? Math.round((completedDays / trackedDays) * 100) : 0;
 
+  // Calendar state
+  const [currentMonth, setCurrentMonth] = useState(() => new Date());
+
+  // Helper: resolve task icon from userTasks
+  const getTaskIcon = (taskName: string): string => {
+    const ut = userTasks.find((u) => u.task_name === taskName);
+    return ut?.icon || 'bolt';
+  };
+  const TaskIcon = ({ taskName, className }: { taskName: string; className?: string }) => {
+    const iconKey = getTaskIcon(taskName);
+    const IconComp = TASK_ICON_MAP[iconKey] || Bolt;
+    return <IconComp className={className} />;
+  };
+
+  // Calendar helpers
+  const monthStart = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
+  const monthEnd = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
+  const startDayOfWeek = (monthStart.getDay() + 6) % 7; // Monday=0
+  const daysInMonth = monthEnd.getDate();
+
+  const monthLabel = monthStart.toLocaleDateString('en-US', { month: 'long' });
+  const yearLabel = monthStart.getFullYear();
+
+  // Map historyDays by date for quick lookup
+  const historyMap = historyDays.reduce((acc, d) => { acc[d.date] = d; return acc; }, {} as Record<string, HistoryDay>);
+
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  // Generate calendar cells
+  const calendarCells: (HistoryDay | null)[] = [];
+  // Leading empty cells
+  for (let i = 0; i < startDayOfWeek; i++) calendarCells.push(null);
+  // Day cells
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    calendarCells.push(historyMap[dateStr] || { date: dateStr, tasks: [], completed: false, dayNumber: 0, isMissed: false, isToday: dateStr === todayStr });
+  }
+
+  const navigateMonth = (delta: number) => {
+    setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+    setSelectedDate(null);
+  };
+
+  // Selected day data
+  const selectedDay = selectedDate ? historyMap[selectedDate] : null;
+  const selectedDayPhotos = selectedDay?.tasks.filter((t) => t.photo_url) || [];
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-      <h2 className="font-headline text-3xl font-bold tracking-tight uppercase">Challenge History</h2>
-
-      {/* Özet istatistikler */}
+      {/* Summary Stats */}
       {!loading && historyDays.length > 0 && (
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            { label: 'DAYS DONE', value: completedDays, icon: '✅' },
-            { label: 'BEST RUN', value: `${bestRun}d`, icon: '🔥' },
-            { label: 'SUCCESS RATE', value: `${rate}%`, icon: '⚡' },
-          ].map((stat) => (
-            <div key={stat.label} className="bg-surface-container rounded-xl p-3 text-center">
-              <p className="text-lg mb-0.5">{stat.icon}</p>
-              <p className="font-headline font-black text-lg text-on-surface leading-none">{stat.value}</p>
-              <p className="font-label text-[9px] tracking-widest text-on-surface-variant uppercase mt-1">{stat.label}</p>
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-surface-container border border-outline-variant/10 p-4 rounded-xl flex flex-col items-center justify-center text-center">
+            <span className="text-[10px] font-bold tracking-widest text-on-surface-variant uppercase mb-1">DAYS DONE</span>
+            <div className="flex items-center gap-1">
+              <span className="font-headline text-2xl font-bold text-primary-fixed">{completedDays}</span>
+              <span className="text-xs text-on-surface-variant/60 font-bold">/75</span>
             </div>
-          ))}
+          </div>
+          <div className="bg-surface-container border border-outline-variant/10 p-4 rounded-xl flex flex-col items-center justify-center text-center">
+            <span className="text-[10px] font-bold tracking-widest text-on-surface-variant uppercase mb-1">BEST RUN</span>
+            <div className="flex items-center gap-1">
+              <span className="font-headline text-2xl font-bold">{bestRun}</span>
+              <span className="material-symbols-outlined text-primary-fixed text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>local_fire_department</span>
+            </div>
+          </div>
+          <div className="bg-surface-container border border-outline-variant/10 p-4 rounded-xl flex flex-col items-center justify-center text-center">
+            <span className="text-[10px] font-bold tracking-widest text-on-surface-variant uppercase mb-1">SUCCESS</span>
+            <div className="flex items-center gap-1">
+              <span className="font-headline text-2xl font-bold">{rate}%</span>
+            </div>
+          </div>
         </div>
       )}
+
+      {/* Month Navigation */}
+      <div className="flex items-end justify-between">
+        <div className="space-y-1">
+          <span className="font-bold text-[11px] uppercase tracking-[0.2em] text-on-surface-variant">CURRENT PHASE</span>
+          <h2 className="font-headline text-4xl font-bold tracking-tighter uppercase">{monthLabel}</h2>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => navigateMonth(-1)} className="p-2 bg-surface-container rounded-lg text-on-surface-variant hover:text-primary-fixed transition-colors active:scale-90">
+            <span className="material-symbols-outlined">chevron_left</span>
+          </button>
+          <button onClick={() => navigateMonth(1)} className="p-2 bg-surface-container rounded-lg text-on-surface-variant hover:text-primary-fixed transition-colors active:scale-90">
+            <span className="material-symbols-outlined">chevron_right</span>
+          </button>
+        </div>
+      </div>
 
       {loading ? (
         <div className="text-center py-12 text-on-surface-variant">Loading history...</div>
-      ) : historyDays.length === 0 ? (
-        <div className="text-center py-12 text-on-surface-variant">No tasks recorded yet</div>
       ) : (
-        <div className="space-y-2">
-          {historyDays.map((day) => {
-            const completedCount = day.tasks.filter((t) => t.completed).length;
+        <>
+          {/* Calendar Grid */}
+          <div className="grid grid-cols-7 gap-2">
+            {/* Day Labels */}
+            {['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'].map((d) => (
+              <div key={d} className="text-center font-bold text-[10px] text-on-surface-variant/40 py-2">{d}</div>
+            ))}
+            {/* Day Cells */}
+            {calendarCells.map((day, i) => {
+              if (!day) {
+                return <div key={`empty-${i}`} className="aspect-square bg-surface-container-lowest flex items-center justify-center rounded-lg opacity-20" />;
+              }
+              const dayNum = parseInt(day.date.split('-')[2]);
+              const isFuture = day.date > todayStr;
+              const isSelected = selectedDate === day.date;
+              const isToday = day.date === todayStr;
 
-            // Missed gün — expand yok
-            if (day.isMissed) {
               return (
-                <div key={day.date} className="opacity-40">
-                  <div className="w-full p-3 rounded-xl bg-surface-container border-l-4 border-surface-container-highest flex justify-between items-center">
-                    <div>
-                      <span className="font-label text-[9px] text-on-surface-variant tracking-widest uppercase">DAY {day.dayNumber}</span>
-                      <p className="font-headline font-bold text-on-surface text-sm">{formatDate(day.date)}</p>
-                    </div>
-                    <span className="text-on-surface-variant font-headline font-bold text-lg">—</span>
-                  </div>
-                </div>
-              );
-            }
-
-            return (
-              <div key={day.date} className="space-y-1.5">
-                {/* Streak run chip */}
-                {day.streakRunLength && (
-                  <div className="flex items-center gap-1.5 px-1">
-                    <span className="text-sm">🔥</span>
-                    <span className="font-label text-[10px] font-black tracking-widest text-primary-container uppercase">
-                      {day.streakRunLength}-DAY STREAK RUN
-                    </span>
-                  </div>
-                )}
-
-                {/* Gün kartı */}
                 <button
-                  onClick={() => !day.isMissed && setSelectedDate(selectedDate === day.date ? null : day.date)}
+                  key={day.date}
+                  onClick={() => !isFuture && setSelectedDate(isSelected ? null : day.date)}
+                  disabled={isFuture}
                   className={cn(
-                    'w-full p-4 rounded-xl text-left transition-all',
-                    day.isToday
-                      ? 'bg-secondary/10 border-l-4 border-secondary'
-                      : day.completed
-                      ? 'bg-primary-container/20 border-l-4 border-primary-container'
-                      : 'bg-surface-container border-l-4 border-surface-container-highest',
-                    selectedDate === day.date && 'ring-2 ring-primary-container'
+                    'aspect-square flex flex-col items-center justify-center rounded-lg cursor-pointer transition-all active:scale-90',
+                    isFuture && 'bg-surface-container/20 border border-outline-variant/10 opacity-50 cursor-default',
+                    !isFuture && day.completed && 'bg-primary-container text-on-primary-container',
+                    !isFuture && !day.completed && day.isMissed && 'bg-surface-container/40 border border-outline-variant/10 opacity-40',
+                    !isFuture && !day.completed && !day.isMissed && !isToday && 'bg-surface-container border border-outline-variant/20',
+                    isToday && !day.completed && 'bg-surface-container border border-outline-variant/20',
+                    isToday && day.completed && 'bg-primary-container text-on-primary-container',
+                    isToday && 'ring-2 ring-primary-fixed ring-offset-2 ring-offset-surface z-10 shadow-[0_0_20px_rgba(206,252,34,0.4)]',
+                    isSelected && !isToday && 'ring-2 ring-primary-fixed/50 ring-offset-1 ring-offset-surface'
                   )}
                 >
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <span className="font-label text-[9px] tracking-widest uppercase text-on-surface-variant">
-                        {day.isToday ? 'TODAY · IN PROGRESS' : `DAY ${day.dayNumber}`}
-                      </span>
-                      <p className="font-headline font-bold text-on-surface">{formatDate(day.date)}</p>
-                      <p className="text-sm text-on-surface-variant">
-                        {completedCount}/{day.tasks.length} completed
-                      </p>
+                  <span className={cn('font-headline font-bold text-xs', isFuture && 'text-on-surface')}>{String(dayNum).padStart(2, '0')}</span>
+                  {!isFuture && day.completed && (
+                    <span className="material-symbols-outlined text-[10px]" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                  )}
+                  {!isFuture && day.isMissed && (
+                    <span className="material-symbols-outlined text-on-surface-variant text-[10px]">close</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Selected Day Detail Card */}
+          <AnimatePresence>
+            {selectedDay && (
+              <motion.div
+                key={selectedDate}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="rounded-2xl border border-primary-fixed/20 overflow-hidden"
+                style={{ background: 'rgba(26, 26, 26, 0.6)', backdropFilter: 'blur(20px)' }}
+              >
+                {/* Card Header */}
+                <div className="p-6 border-b border-outline-variant/10 flex justify-between items-center">
+                  <div>
+                    <h3 className="font-headline text-5xl font-black italic tracking-tighter text-on-surface">
+                      {selectedDay.streakDay
+                        ? selectedDay.isCurrentStreak
+                          ? `DAY ${selectedDay.streakDay}`
+                          : `STREAK DAY ${selectedDay.streakDay}`
+                        : formatDate(selectedDay.date)
+                      }
+                    </h3>
+                    <p className="text-[10px] font-bold tracking-[0.2em] text-primary-fixed uppercase">
+                      {new Date(selectedDay.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()}
+                    </p>
+                  </div>
+                  {selectedDay.completed ? (
+                    <div className="flex items-center gap-2 bg-primary-fixed/10 px-3 py-2 rounded-full border border-primary-fixed/20">
+                      <span className="material-symbols-outlined text-primary-fixed text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>verified</span>
+                      <span className="text-[9px] font-black text-primary-fixed tracking-widest uppercase">ALL COMPLETE</span>
                     </div>
-                    <div className="text-right">
-                      {day.isToday ? (
-                        <span className="text-xl">⚡</span>
-                      ) : day.completed ? (
-                        <span className="text-2xl">✅</span>
-                      ) : (
-                        <span className="font-label text-xs text-on-surface-variant">{completedCount}/{day.tasks.length}</span>
-                      )}
+                  ) : selectedDay.isMissed ? (
+                    <div className="flex items-center gap-2 bg-error/10 px-3 py-2 rounded-full border border-error/20">
+                      <span className="material-symbols-outlined text-error text-sm">cancel</span>
+                      <span className="text-[9px] font-black text-error tracking-widest uppercase">MISSED</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 bg-secondary/10 px-3 py-2 rounded-full border border-secondary/20">
+                      <span className="text-[9px] font-black text-secondary tracking-widest uppercase">
+                        {selectedDay.tasks.filter((t) => t.completed).length}/{selectedDay.tasks.length} DONE
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Task List */}
+                {selectedDay.tasks.length > 0 ? (
+                  <div className="p-4 space-y-3">
+                    {selectedDay.tasks.map((task) => (
+                      <div key={task.task_name} className="flex items-center gap-4 bg-surface-container-high/50 p-3 rounded-xl">
+                        {task.photo_url ? (
+                          <button
+                            onClick={() => setLightbox({ url: task.photo_url!, label: task.task_name, dayLabel: selectedDay.streakDay ? (selectedDay.isCurrentStreak ? `DAY ${selectedDay.streakDay}` : `STREAK DAY ${selectedDay.streakDay}`) : formatDate(selectedDay.date) })}
+                            className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 active:scale-95 transition-transform"
+                          >
+                            <img src={task.photo_url} className="w-full h-full object-cover" alt={task.task_name} />
+                          </button>
+                        ) : (
+                          <div className="w-12 h-12 rounded-lg bg-surface-container flex items-center justify-center flex-shrink-0 border border-outline-variant/10">
+                            <TaskIcon taskName={task.task_name} className="text-on-surface-variant/40" />
+                          </div>
+                        )}
+                        <div className="flex-1">
+                          <h4 className="font-headline font-bold text-sm">{task.task_name}</h4>
+                          {task.completed_at && (
+                            <span className="text-[10px] text-on-surface-variant font-medium">
+                              Completed at {new Date(task.completed_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                        {task.completed ? (
+                          <span className="material-symbols-outlined text-primary-fixed" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                        ) : (
+                          <span className="material-symbols-outlined text-on-surface-variant/30">radio_button_unchecked</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-6 text-center text-on-surface-variant text-sm">No tasks recorded for this day</div>
+                )}
+
+                {/* Daily Captures Gallery */}
+                {selectedDayPhotos.length > 0 && (
+                  <div className="px-4 pb-4">
+                    <div className="flex items-center justify-between mb-3 px-1">
+                      <span className="font-label text-[10px] tracking-[0.4em] text-on-surface-variant uppercase">DAILY CAPTURES</span>
+                      <span className="font-label text-[9px] text-primary-fixed tracking-widest font-bold">{selectedDayPhotos.length} IMAGE{selectedDayPhotos.length > 1 ? 'S' : ''}</span>
+                    </div>
+                    <div className="grid grid-cols-4 sm:grid-cols-5 gap-3">
+                      {selectedDayPhotos.map((task) => (
+                        <button
+                          key={task.task_name}
+                          onClick={() => setLightbox({ url: task.photo_url!, label: task.task_name, dayLabel: selectedDay.streakDay ? (selectedDay.isCurrentStreak ? `DAY ${selectedDay.streakDay}` : `STREAK DAY ${selectedDay.streakDay}`) : formatDate(selectedDay.date) })}
+                          className="aspect-square bg-surface-container rounded-lg overflow-hidden border border-outline-variant/20 active:scale-95 transition-transform"
+                        >
+                          <img src={task.photo_url} className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" alt={task.task_name} />
+                        </button>
+                      ))}
                     </div>
                   </div>
-                </button>
-
-                {/* Expand: görev detayları */}
-                <AnimatePresence>
-                  {selectedDate === day.date && (
-                    <motion.div
-                      key="tasks"
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden"
-                    >
-                      <div className="space-y-1.5 ml-2 pt-1">
-                        {day.tasks.map((task) => (
-                          <div
-                            key={task.task_name}
-                            className={cn(
-                              'p-3 rounded-lg border-l-2',
-                              task.completed
-                                ? 'bg-surface-container-highest border-primary-container'
-                                : 'bg-surface-container border-surface-container-highest'
-                            )}
-                          >
-                            <div className="flex justify-between items-start gap-2">
-                              <div className="flex-1">
-                                <p className="text-sm font-semibold text-on-surface">{task.task_name}</p>
-                                {task.photo_url && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setLightbox({ url: task.photo_url!, label: task.task_name });
-                                    }}
-                                    className="mt-2 relative w-20 h-20 rounded-lg overflow-hidden active:scale-95 transition-transform block"
-                                  >
-                                    <img
-                                      src={task.photo_url}
-                                      className="w-full h-full object-cover"
-                                      alt={task.task_name}
-                                    />
-                                    <div className="absolute inset-0 flex items-end justify-start p-1">
-                                      <span className="bg-black/60 text-white text-[8px] font-bold px-1 py-0.5 rounded">
-                                        TAP TO EXPAND
-                                      </span>
-                                    </div>
-                                  </button>
-                                )}
-                              </div>
-                              {task.completed
-                                ? <span className="text-lg text-primary-container">✓</span>
-                                : <span className="text-lg text-on-surface-variant opacity-40">✗</span>
-                              }
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            );
-          })}
-        </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </>
       )}
 
-      {/* Foto lightbox */}
+      {/* Lightbox */}
       <AnimatePresence>
         {lightbox && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/95 z-50 flex flex-col items-center justify-center px-4"
+            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-sm flex flex-col items-center justify-between p-6 cursor-pointer"
             onClick={() => setLightbox(null)}
           >
-            <motion.img
-              initial={{ scale: 0.85, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.85, opacity: 0 }}
-              src={lightbox.url}
-              className="max-w-full max-h-[75vh] object-contain rounded-2xl"
-              alt={lightbox.label}
-            />
-            <p className="mt-4 font-headline font-bold text-white text-center">{lightbox.label}</p>
-            <p className="text-xs text-white/50 mt-2">Tap anywhere to close</p>
+            {/* Header */}
+            <div className="w-full flex justify-between items-center max-w-4xl pt-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-surface-container flex items-center justify-center">
+                  <Bolt className="text-primary-fixed" />
+                </div>
+                <div>
+                  <p className="font-headline font-bold text-xs tracking-widest text-on-surface-variant uppercase">Archive Entry</p>
+                  <p className="font-headline font-black italic text-lg tracking-tighter text-on-surface">{lightbox.dayLabel}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setLightbox(null)}
+                className="w-12 h-12 flex items-center justify-center rounded-xl bg-surface-container-highest text-on-surface active:scale-90 transition-transform"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            {/* Main Photo */}
+            <div className="relative w-full max-w-4xl flex flex-col items-center" onClick={(e) => e.stopPropagation()}>
+              <div className="relative overflow-hidden rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.8)] border-l-2 border-primary-fixed/20">
+                <motion.img
+                  initial={{ scale: 0.85, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.85, opacity: 0 }}
+                  src={lightbox.url}
+                  className="max-h-[60vh] w-auto object-cover rounded-xl"
+                  alt={lightbox.label}
+                />
+                <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-black/80 to-transparent flex items-end p-6">
+                  <div className="flex flex-col">
+                    <span className="font-label text-[10px] font-bold tracking-[0.2em] text-primary-fixed/80 uppercase">Verified Progress</span>
+                    <span className="font-headline text-2xl font-black italic text-on-surface tracking-tighter uppercase">{lightbox.label}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="pb-6 flex flex-col items-center gap-4">
+              <p className="font-label text-[11px] font-bold tracking-[0.3em] text-on-surface-variant/40 uppercase animate-pulse">
+                Tap anywhere to close
+              </p>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -777,29 +955,24 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [posting, setPosting] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
-  const [feedFilter, setFeedFilter] = useState<'all' | 'friends'>('all');
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const fetchPosts = useCallback(async () => {
-    let feedQuery = supabase
+    const { data: friendsData } = await supabase
+      .from('friends')
+      .select('user_id, friend_id')
+      .eq('status', 'accepted')
+      .or(`user_id.eq.${session?.user?.id},friend_id.eq.${session?.user?.id}`);
+    const friendIds = (friendsData || []).map((f: any) =>
+      f.user_id === session?.user?.id ? f.friend_id : f.user_id
+    );
+
+    const { data: feedData } = await supabase
       .from('social_feed')
       .select('*')
+      .in('user_id', [session?.user?.id, ...friendIds])
       .order('created_at', { ascending: false });
-
-    if (feedFilter === 'friends') {
-      const { data: friendsData } = await supabase
-        .from('friends')
-        .select('user_id, friend_id')
-        .eq('status', 'accepted')
-        .or(`user_id.eq.${session?.user?.id},friend_id.eq.${session?.user?.id}`);
-      const friendIds = (friendsData || []).map((f: any) =>
-        f.user_id === session?.user?.id ? f.friend_id : f.user_id
-      );
-      feedQuery = feedQuery.in('user_id', [session?.user?.id, ...friendIds]);
-    }
-
-    const { data: feedData } = await feedQuery;
 
     if (!feedData) return;
 
@@ -827,7 +1000,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     });
 
     setPosts(enriched as FeedItem[]);
-  }, [session, feedFilter]);
+  }, [session]);
 
   useEffect(() => {
     fetchPosts();
@@ -940,32 +1113,6 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         </button>
       </div>
 
-      {/* Feed Filter Toggle */}
-      <div className="flex gap-2 bg-surface-container p-1 rounded-xl">
-        <button
-          onClick={() => setFeedFilter('all')}
-          className={cn(
-            'flex-1 py-2 rounded-lg font-label text-[11px] font-bold tracking-widest uppercase transition-all active:scale-95',
-            feedFilter === 'all'
-              ? 'bg-primary-container text-on-primary-container shadow-sm'
-              : 'text-on-surface-variant'
-          )}
-        >
-          All
-        </button>
-        <button
-          onClick={() => setFeedFilter('friends')}
-          className={cn(
-            'flex-1 py-2 rounded-lg font-label text-[11px] font-bold tracking-widest uppercase transition-all active:scale-95',
-            feedFilter === 'friends'
-              ? 'bg-primary-container text-on-primary-container shadow-sm'
-              : 'text-on-surface-variant'
-          )}
-        >
-          Friends
-        </button>
-      </div>
-
       {/* Compose Post */}
       <AnimatePresence>
         {showCompose && (
@@ -1021,7 +1168,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         <div className="text-center py-16 text-on-surface-variant">
           <Groups className="w-12 h-12 mx-auto mb-3 opacity-30" />
           <p className="font-label text-sm">
-            {feedFilter === 'friends' ? 'No posts from friends yet. Add friends from your profile!' : 'No posts yet. Be the first to share!'}
+            {'No posts from friends yet. Add friends from your profile!'}
           </p>
         </div>
       )}
@@ -1969,7 +2116,7 @@ export default function App() {
 
     try {
       const { error } = await supabase.from('tasks').upsert(
-        { user_id: session.user.id, date: today, task_name: taskName, completed: newCompleted },
+        { user_id: session.user.id, date: today, task_name: taskName, completed: newCompleted, completed_at: newCompleted ? new Date().toISOString() : null },
         { onConflict: 'user_id,date,task_name' }
       );
       if (error) throw error;
@@ -2010,7 +2157,7 @@ export default function App() {
 
       // Upsert the task with photo
       await supabase.from('tasks').upsert(
-        { user_id: session.user.id, date: today, task_name: taskName, photo_url: photoUrl, completed: true },
+        { user_id: session.user.id, date: today, task_name: taskName, photo_url: photoUrl, completed: true, completed_at: new Date().toISOString() },
         { onConflict: 'user_id,date,task_name' }
       );
 
@@ -2187,6 +2334,7 @@ export default function App() {
               <History
                 session={session}
                 profile={profile}
+                userTasks={userTasks}
               />
             </React.Fragment>
           )}
