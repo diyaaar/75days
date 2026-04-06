@@ -100,6 +100,14 @@ interface FeedItem {
   liked_by_me: boolean;
 }
 
+interface FriendRow {
+  id: string;
+  user_id: string;
+  friend_id: string;
+  status: string;
+  profiles: Profile;
+}
+
 interface TaskIconOption {
   key: string;
   label: string;
@@ -250,7 +258,8 @@ const PhotoModal = ({
       initial={{ y: 400 }}
       animate={{ y: 0 }}
       exit={{ y: 400 }}
-      className="fixed bottom-0 left-0 right-0 w-full bg-surface-container rounded-t-3xl p-6 space-y-4 z-50"
+      className="fixed bottom-0 left-0 right-0 w-full bg-surface-container rounded-t-3xl p-6 pb-safe space-y-4 z-50"
+      style={{ paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px) + 80px)' }}
     >
         <h3 className="font-headline text-lg font-bold text-on-surface text-center mb-6">{taskName}</h3>
 
@@ -284,20 +293,27 @@ const PhotoModal = ({
 // =============================================
 // HISTORY COMPONENT
 // =============================================
+type HistoryDay = {
+  date: string;
+  tasks: DailyTask[];
+  completed: boolean;
+  dayNumber: number;
+  isMissed: boolean;
+  isToday: boolean;
+  streakRunLength?: number;
+};
+
 const History = ({
   session,
-  userTasks,
   profile,
 }: {
   session: any;
-  userTasks: UserTask[];
   profile: Profile | null;
 }) => {
-  const [historyDays, setHistoryDays] = useState<
-    Array<{ date: string; tasks: DailyTask[]; completed: boolean }>
-  >([]);
+  const [historyDays, setHistoryDays] = useState<HistoryDay[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lightbox, setLightbox] = useState<{ url: string; label: string } | null>(null);
 
   useEffect(() => {
     loadHistory();
@@ -305,10 +321,13 @@ const History = ({
 
   const loadHistory = async () => {
     try {
-      const startDate = profile?.challenge_start_date
+      const challengeStart = profile?.challenge_start_date
         ? new Date(profile.challenge_start_date)
-        : new Date();
-      startDate.setDate(startDate.getDate() - 30);
+        : (() => {
+            const d = new Date();
+            d.setDate(d.getDate() - Math.max((profile?.total_days ?? 0) + 5, 30));
+            return d;
+          })();
 
       const endDate = new Date();
       endDate.setDate(endDate.getDate() + 1);
@@ -317,10 +336,11 @@ const History = ({
         .from('tasks')
         .select('*')
         .eq('user_id', session.user.id)
-        .gte('date', startDate.toISOString().split('T')[0])
+        .gte('date', challengeStart.toISOString().split('T')[0])
         .lte('date', endDate.toISOString().split('T')[0])
         .order('date', { ascending: false });
 
+      // DB kayıtlarını tarihe göre grupla
       const grouped: Record<string, DailyTask[]> = {};
       data?.forEach((task: any) => {
         if (!grouped[task.date]) grouped[task.date] = [];
@@ -332,15 +352,47 @@ const History = ({
         });
       });
 
-      const historyArray = Object.entries(grouped)
-        .map(([date, tasks]) => ({
-          date,
-          tasks,
-          completed: tasks.length >= userTasks.length && tasks.every((t) => t.completed),
-        }))
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      // Challenge başından bugüne her günü üret
+      const todayStr = new Date().toISOString().split('T')[0];
+      const allDays: HistoryDay[] = [];
+      const cursor = new Date(challengeStart);
+      cursor.setHours(0, 0, 0, 0);
 
-      setHistoryDays(historyArray);
+      while (cursor < endDate) {
+        const dateStr = cursor.toISOString().split('T')[0];
+        const tasks = grouped[dateStr] || [];
+        const dayNumber =
+          Math.round((cursor.getTime() - challengeStart.getTime()) / 86400000) + 1;
+        allDays.push({
+          date: dateStr,
+          tasks,
+          completed: tasks.length > 0 && tasks.every((t) => t.completed),
+          dayNumber: Math.max(1, dayNumber),
+          isMissed: tasks.length === 0 && dateStr < todayStr,
+          isToday: dateStr === todayStr,
+        });
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      // Yeniden eskiye sırala
+      allDays.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      // Streak koşularını tespit et ve annotation ekle (descending sırada)
+      allDays.forEach((day, idx) => {
+        if (!day.completed) return;
+        const prevDay = allDays[idx - 1]; // daha yeni gün
+        const isRunStart = !prevDay || !prevDay.completed;
+        if (isRunStart) {
+          let len = 0;
+          for (let j = idx; j < allDays.length; j++) {
+            if (allDays[j].completed) len++;
+            else break;
+          }
+          if (len > 1) day.streakRunLength = len;
+        }
+      });
+
+      setHistoryDays(allDays);
     } catch (error: any) {
       toast.error('Failed to load history');
     } finally {
@@ -353,70 +405,189 @@ const History = ({
     return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   };
 
+  // Özet istatistikler
+  const completedDays = historyDays.filter((d) => d.completed).length;
+  const bestRun = historyDays.reduce((max, d) => Math.max(max, d.streakRunLength || 0), 0);
+  const trackedDays = historyDays.filter((d) => !d.isMissed && !d.isToday).length;
+  const rate = trackedDays > 0 ? Math.round((completedDays / trackedDays) * 100) : 0;
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
       <h2 className="font-headline text-3xl font-bold tracking-tight uppercase">Challenge History</h2>
+
+      {/* Özet istatistikler */}
+      {!loading && historyDays.length > 0 && (
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { label: 'DAYS DONE', value: completedDays, icon: '✅' },
+            { label: 'BEST RUN', value: `${bestRun}d`, icon: '🔥' },
+            { label: 'SUCCESS RATE', value: `${rate}%`, icon: '⚡' },
+          ].map((stat) => (
+            <div key={stat.label} className="bg-surface-container rounded-xl p-3 text-center">
+              <p className="text-lg mb-0.5">{stat.icon}</p>
+              <p className="font-headline font-black text-lg text-on-surface leading-none">{stat.value}</p>
+              <p className="font-label text-[9px] tracking-widest text-on-surface-variant uppercase mt-1">{stat.label}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center py-12 text-on-surface-variant">Loading history...</div>
       ) : historyDays.length === 0 ? (
         <div className="text-center py-12 text-on-surface-variant">No tasks recorded yet</div>
       ) : (
-        <div className="space-y-3">
-          {historyDays.map((day) => (
-            <div key={day.date} className="space-y-2">
-              <button
-                onClick={() => setSelectedDate(selectedDate === day.date ? null : day.date)}
-                className={cn(
-                  'w-full p-4 rounded-xl text-left transition-all',
-                  day.completed
-                    ? 'bg-primary-container/20 border-l-4 border-primary-container'
-                    : 'bg-surface-container border-l-4 border-surface-container-highest',
-                  selectedDate === day.date && 'ring-2 ring-primary-container'
-                )}
-              >
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="font-headline font-bold text-on-surface">{formatDate(day.date)}</p>
-                    <p className="text-sm text-on-surface-variant">
-                      {day.tasks.filter((t) => t.completed).length}/{day.tasks.length} completed
-                    </p>
-                  </div>
-                  {day.completed && <span className="text-2xl">✅</span>}
-                </div>
-              </button>
+        <div className="space-y-2">
+          {historyDays.map((day) => {
+            const completedCount = day.tasks.filter((t) => t.completed).length;
 
-              {selectedDate === day.date && (
-                <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} className="space-y-2 ml-2">
-                  {day.tasks.map((task) => (
-                    <div
-                      key={task.task_name}
-                      className={cn(
-                        'p-3 rounded-lg border-l-2',
-                        task.completed
-                          ? 'bg-surface-container-highest border-primary-container'
-                          : 'bg-surface-container border-surface-container-highest'
-                      )}
-                    >
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="flex-1">
-                          <p className="text-sm font-semibold text-on-surface">{task.task_name}</p>
-                          {task.photo_url && (
-                            <div className="mt-2 w-20 h-20 rounded-lg overflow-hidden">
-                              <img src={task.photo_url} className="w-full h-full object-cover" alt="task" />
-                            </div>
-                          )}
-                        </div>
-                        {task.completed && <span className="text-lg">✓</span>}
-                      </div>
+            // Missed gün — expand yok
+            if (day.isMissed) {
+              return (
+                <div key={day.date} className="opacity-40">
+                  <div className="w-full p-3 rounded-xl bg-surface-container border-l-4 border-surface-container-highest flex justify-between items-center">
+                    <div>
+                      <span className="font-label text-[9px] text-on-surface-variant tracking-widest uppercase">DAY {day.dayNumber}</span>
+                      <p className="font-headline font-bold text-on-surface text-sm">{formatDate(day.date)}</p>
                     </div>
-                  ))}
-                </motion.div>
-              )}
-            </div>
-          ))}
+                    <span className="text-on-surface-variant font-headline font-bold text-lg">—</span>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div key={day.date} className="space-y-1.5">
+                {/* Streak run chip */}
+                {day.streakRunLength && (
+                  <div className="flex items-center gap-1.5 px-1">
+                    <span className="text-sm">🔥</span>
+                    <span className="font-label text-[10px] font-black tracking-widest text-primary-container uppercase">
+                      {day.streakRunLength}-DAY STREAK RUN
+                    </span>
+                  </div>
+                )}
+
+                {/* Gün kartı */}
+                <button
+                  onClick={() => !day.isMissed && setSelectedDate(selectedDate === day.date ? null : day.date)}
+                  className={cn(
+                    'w-full p-4 rounded-xl text-left transition-all',
+                    day.isToday
+                      ? 'bg-secondary/10 border-l-4 border-secondary'
+                      : day.completed
+                      ? 'bg-primary-container/20 border-l-4 border-primary-container'
+                      : 'bg-surface-container border-l-4 border-surface-container-highest',
+                    selectedDate === day.date && 'ring-2 ring-primary-container'
+                  )}
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <span className="font-label text-[9px] tracking-widest uppercase text-on-surface-variant">
+                        {day.isToday ? 'TODAY · IN PROGRESS' : `DAY ${day.dayNumber}`}
+                      </span>
+                      <p className="font-headline font-bold text-on-surface">{formatDate(day.date)}</p>
+                      <p className="text-sm text-on-surface-variant">
+                        {completedCount}/{day.tasks.length} completed
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      {day.isToday ? (
+                        <span className="text-xl">⚡</span>
+                      ) : day.completed ? (
+                        <span className="text-2xl">✅</span>
+                      ) : (
+                        <span className="font-label text-xs text-on-surface-variant">{completedCount}/{day.tasks.length}</span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+
+                {/* Expand: görev detayları */}
+                <AnimatePresence>
+                  {selectedDate === day.date && (
+                    <motion.div
+                      key="tasks"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="space-y-1.5 ml-2 pt-1">
+                        {day.tasks.map((task) => (
+                          <div
+                            key={task.task_name}
+                            className={cn(
+                              'p-3 rounded-lg border-l-2',
+                              task.completed
+                                ? 'bg-surface-container-highest border-primary-container'
+                                : 'bg-surface-container border-surface-container-highest'
+                            )}
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <div className="flex-1">
+                                <p className="text-sm font-semibold text-on-surface">{task.task_name}</p>
+                                {task.photo_url && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setLightbox({ url: task.photo_url!, label: task.task_name });
+                                    }}
+                                    className="mt-2 relative w-20 h-20 rounded-lg overflow-hidden active:scale-95 transition-transform block"
+                                  >
+                                    <img
+                                      src={task.photo_url}
+                                      className="w-full h-full object-cover"
+                                      alt={task.task_name}
+                                    />
+                                    <div className="absolute inset-0 flex items-end justify-start p-1">
+                                      <span className="bg-black/60 text-white text-[8px] font-bold px-1 py-0.5 rounded">
+                                        TAP TO EXPAND
+                                      </span>
+                                    </div>
+                                  </button>
+                                )}
+                              </div>
+                              {task.completed
+                                ? <span className="text-lg text-primary-container">✓</span>
+                                : <span className="text-lg text-on-surface-variant opacity-40">✗</span>
+                              }
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            );
+          })}
         </div>
       )}
+
+      {/* Foto lightbox */}
+      <AnimatePresence>
+        {lightbox && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/95 z-50 flex flex-col items-center justify-center px-4"
+            onClick={() => setLightbox(null)}
+          >
+            <motion.img
+              initial={{ scale: 0.85, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.85, opacity: 0 }}
+              src={lightbox.url}
+              className="max-w-full max-h-[75vh] object-contain rounded-2xl"
+              alt={lightbox.label}
+            />
+            <p className="mt-4 font-headline font-bold text-white text-center">{lightbox.label}</p>
+            <p className="text-xs text-white/50 mt-2">Tap anywhere to close</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };
@@ -606,14 +777,29 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [posting, setPosting] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
+  const [feedFilter, setFeedFilter] = useState<'all' | 'friends'>('all');
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const fetchPosts = useCallback(async () => {
-    const { data: feedData } = await supabase
+    let feedQuery = supabase
       .from('social_feed')
       .select('*')
       .order('created_at', { ascending: false });
+
+    if (feedFilter === 'friends') {
+      const { data: friendsData } = await supabase
+        .from('friends')
+        .select('user_id, friend_id')
+        .eq('status', 'accepted')
+        .or(`user_id.eq.${session?.user?.id},friend_id.eq.${session?.user?.id}`);
+      const friendIds = (friendsData || []).map((f: any) =>
+        f.user_id === session?.user?.id ? f.friend_id : f.user_id
+      );
+      feedQuery = feedQuery.in('user_id', [session?.user?.id, ...friendIds]);
+    }
+
+    const { data: feedData } = await feedQuery;
 
     if (!feedData) return;
 
@@ -641,7 +827,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     });
 
     setPosts(enriched as FeedItem[]);
-  }, [session]);
+  }, [session, feedFilter]);
 
   useEffect(() => {
     fetchPosts();
@@ -738,7 +924,8 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-      <input type="file" ref={fileInputRef} accept="image/*" capture="environment" className="hidden" onChange={handlePhotoSelect} />
+      <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handlePhotoSelect} />
+      <input type="file" ref={galleryInputRef} accept="image/*" className="hidden" onChange={handlePhotoSelect} />
 
       <div className="flex justify-between items-end">
         <div className="space-y-1">
@@ -750,6 +937,32 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
           className="icon-button w-10 h-10 bg-primary-container text-on-primary-container rounded-xl active:scale-95 transition-transform"
         >
           {showCompose ? <Close className="w-5 h-5" /> : <Add className="w-5 h-5" />}
+        </button>
+      </div>
+
+      {/* Feed Filter Toggle */}
+      <div className="flex gap-2 bg-surface-container p-1 rounded-xl">
+        <button
+          onClick={() => setFeedFilter('all')}
+          className={cn(
+            'flex-1 py-2 rounded-lg font-label text-[11px] font-bold tracking-widest uppercase transition-all active:scale-95',
+            feedFilter === 'all'
+              ? 'bg-primary-container text-on-primary-container shadow-sm'
+              : 'text-on-surface-variant'
+          )}
+        >
+          All
+        </button>
+        <button
+          onClick={() => setFeedFilter('friends')}
+          className={cn(
+            'flex-1 py-2 rounded-lg font-label text-[11px] font-bold tracking-widest uppercase transition-all active:scale-95',
+            feedFilter === 'friends'
+              ? 'bg-primary-container text-on-primary-container shadow-sm'
+              : 'text-on-surface-variant'
+          )}
+        >
+          Friends
         </button>
       </div>
 
@@ -781,9 +994,14 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                 </div>
               )}
               <div className="flex justify-between items-center">
-                <button onClick={() => fileInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors">
-                  <Image className="w-5 h-5" />
-                </button>
+                <div className="flex gap-2">
+                  <button onClick={() => cameraInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Take photo">
+                    <PhotoCamera className="w-5 h-5" />
+                  </button>
+                  <button onClick={() => galleryInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Choose from gallery">
+                    <Image className="w-5 h-5" />
+                  </button>
+                </div>
                 <button
                   onClick={handlePost}
                   disabled={posting || (!newPostContent.trim() && !newPostPhoto)}
@@ -802,7 +1020,9 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
       {posts.length === 0 && (
         <div className="text-center py-16 text-on-surface-variant">
           <Groups className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p className="font-label text-sm">No posts yet. Be the first to share!</p>
+          <p className="font-label text-sm">
+            {feedFilter === 'friends' ? 'No posts from friends yet. Add friends from your profile!' : 'No posts yet. Be the first to share!'}
+          </p>
         </div>
       )}
       {posts.map((post) => (
@@ -947,6 +1167,285 @@ const Rank = () => {
         </div>
       )}
     </motion.div>
+  );
+};
+
+// =============================================
+// FRIENDS SECTION COMPONENT
+// =============================================
+const FriendsSection = ({ profile }: { profile: Profile }) => {
+  const [friends, setFriends] = useState<FriendRow[]>([]);
+  const [incoming, setIncoming] = useState<FriendRow[]>([]);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Profile[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [pendingActions, setPendingActions] = useState<Set<string>>(new Set());
+  const [outgoingIds, setOutgoingIds] = useState<Set<string>>(new Set());
+
+  const fetchFriends = useCallback(async () => {
+    const { data } = await supabase
+      .from('friends')
+      .select('id, user_id, friend_id, status')
+      .or(`user_id.eq.${profile.id},friend_id.eq.${profile.id}`);
+
+    if (!data) return;
+
+    const otherIds = data.map((f: any) => f.user_id === profile.id ? f.friend_id : f.user_id);
+    const uniqueIds = [...new Set(otherIds)] as string[];
+
+    let profileMap: Record<string, Profile> = {};
+    if (uniqueIds.length > 0) {
+      const { data: profilesData } = await supabase.from('profiles').select('*').in('id', uniqueIds);
+      profileMap = (profilesData || []).reduce((acc: any, p: any) => { acc[p.id] = p; return acc; }, {});
+    }
+
+    const enriched: FriendRow[] = data.map((f: any) => ({
+      ...f,
+      profiles: profileMap[f.user_id === profile.id ? f.friend_id : f.user_id],
+    }));
+
+    setFriends(enriched.filter(f => f.status === 'accepted'));
+    setIncoming(enriched.filter(f => f.status === 'pending' && f.friend_id === profile.id));
+    const outgoing = new Set(
+      enriched.filter(f => f.status === 'pending' && f.user_id === profile.id).map(f => f.friend_id)
+    );
+    setOutgoingIds(outgoing);
+  }, [profile.id]);
+
+  useEffect(() => { fetchFriends(); }, [fetchFriends]);
+
+  const handleAccept = async (requestId: string) => {
+    setPendingActions(prev => new Set(prev).add(requestId));
+    const { error } = await supabase.from('friends').update({ status: 'accepted' }).eq('id', requestId);
+    if (error) toast.error(error.message);
+    else toast.success('Friend accepted! 🤝');
+    await fetchFriends();
+    setPendingActions(prev => { const s = new Set(prev); s.delete(requestId); return s; });
+  };
+
+  const handleReject = async (requestId: string) => {
+    setPendingActions(prev => new Set(prev).add(requestId));
+    const { error } = await supabase.from('friends').delete().eq('id', requestId);
+    if (error) toast.error(error.message);
+    else toast.success('Request removed');
+    await fetchFriends();
+    setPendingActions(prev => { const s = new Set(prev); s.delete(requestId); return s; });
+  };
+
+  const handleUnfriend = async (friendRowId: string) => {
+    const { error } = await supabase.from('friends').delete().eq('id', friendRowId);
+    if (error) toast.error(error.message);
+    else toast.success('Removed from friends');
+    await fetchFriends();
+  };
+
+  const handleSearch = async (query: string) => {
+    setSearchQuery(query);
+    if (query.trim().length < 2) { setSearchResults([]); return; }
+    setSearching(true);
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .ilike('username', `%${query.trim()}%`)
+      .neq('id', profile.id)
+      .limit(10);
+    setSearchResults(data || []);
+    setSearching(false);
+  };
+
+  const handleSendRequest = async (targetId: string) => {
+    setPendingActions(prev => new Set(prev).add(targetId));
+    const { error } = await supabase.from('friends').insert({ user_id: profile.id, friend_id: targetId });
+    if (error) {
+      if (error.code === '23505') toast.error('Request already sent');
+      else toast.error(error.message);
+    } else {
+      toast.success('Friend request sent! ✉️');
+      setOutgoingIds(prev => new Set(prev).add(targetId));
+    }
+    setPendingActions(prev => { const s = new Set(prev); s.delete(targetId); return s; });
+  };
+
+  const friendIds = new Set(friends.map(f => f.user_id === profile.id ? f.friend_id : f.user_id));
+
+  return (
+    <section className="space-y-4">
+      <div className="flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <h3 className="font-headline text-lg font-bold uppercase tracking-tight">Friends</h3>
+          {incoming.length > 0 && (
+            <span className="bg-primary-container text-on-primary-container text-[10px] font-black rounded-full w-5 h-5 flex items-center justify-center">
+              {incoming.length}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => { setShowSearch(true); setSearchQuery(''); setSearchResults([]); }}
+          className="icon-button w-8 h-8 bg-primary-container text-on-primary-container rounded-lg active:scale-95 transition-transform"
+        >
+          <Add className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Incoming Requests */}
+      {incoming.length > 0 && (
+        <div className="space-y-2">
+          <p className="font-label text-[10px] tracking-widest uppercase text-primary-container">Pending Requests</p>
+          {incoming.map(req => (
+            <div key={req.id} className="bg-surface-container rounded-xl p-4 border border-primary-container/10">
+              <div className="flex items-center gap-3">
+                <img
+                  src={req.profiles?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${req.profiles?.username}`}
+                  className="w-10 h-10 rounded-xl object-cover"
+                  alt=""
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="font-headline font-bold text-sm uppercase truncate">{req.profiles?.username}</p>
+                  <p className="font-label text-[10px] text-on-surface-variant">{req.profiles?.streak} 🔥 streak · Lvl {req.profiles?.level}</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleAccept(req.id)}
+                    disabled={pendingActions.has(req.id)}
+                    className="bg-primary-container text-on-primary-container text-xs font-bold px-3 py-2 rounded-lg active:scale-95 transition-transform disabled:opacity-50"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() => handleReject(req.id)}
+                    disabled={pendingActions.has(req.id)}
+                    className="bg-surface-container-highest text-on-surface-variant text-xs font-bold px-3 py-2 rounded-lg active:scale-95 transition-transform disabled:opacity-50"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Friends List */}
+      {friends.length === 0 && incoming.length === 0 ? (
+        <div className="text-center py-8 text-on-surface-variant">
+          <Groups className="w-10 h-10 mx-auto mb-2 opacity-30" />
+          <p className="font-label text-xs">No friends yet. Find your squad!</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {friends.map(f => {
+            const fp = f.profiles;
+            return (
+              <div key={f.id} className="flex items-center gap-3 bg-surface-container-low p-4 rounded-xl">
+                <img
+                  src={fp?.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${fp?.username}`}
+                  className="w-10 h-10 rounded-xl object-cover"
+                  alt=""
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="font-headline font-bold text-sm uppercase truncate">{fp?.username}</p>
+                  <p className="font-label text-[10px] text-on-surface-variant">{fp?.streak} 🔥 · Lvl {fp?.level}</p>
+                </div>
+                <button
+                  onClick={() => handleUnfriend(f.id)}
+                  className="icon-button w-7 h-7 text-on-surface-variant hover:text-error transition-colors"
+                >
+                  <Close className="w-4 h-4" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Search Bottom Sheet */}
+      <AnimatePresence>
+        {showSearch && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSearch(false)}
+              className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed bottom-0 left-0 right-0 bg-surface-container rounded-t-3xl max-h-[80vh] overflow-y-auto z-50 p-6"
+            >
+              <div className="w-12 h-1 bg-on-surface-variant/20 rounded-full mx-auto mb-6" />
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="font-headline text-2xl font-black uppercase tracking-tight">Find Friends</h3>
+                  <p className="font-label text-[10px] tracking-widest text-primary-container mt-1 uppercase">Search by username</p>
+                </div>
+                <button onClick={() => setShowSearch(false)} className="bg-surface-container-low text-on-surface-variant p-2 rounded-full">
+                  <Close className="w-5 h-5" />
+                </button>
+              </div>
+
+              <input
+                type="text"
+                placeholder="Search username..."
+                className="w-full bg-surface-container-low px-4 py-3 rounded-xl outline-none focus:ring-2 ring-primary-container/30 text-on-surface placeholder:text-on-surface-variant/50 font-headline text-sm mb-4"
+                value={searchQuery}
+                onChange={(e) => handleSearch(e.target.value)}
+                autoFocus
+              />
+
+              <div className="space-y-2 pb-32">
+                {searching && (
+                  <div className="flex justify-center py-4">
+                    <div className="w-5 h-5 border-2 border-primary-container border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
+                {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
+                  <p className="text-center text-on-surface-variant font-label text-sm py-4">No users found</p>
+                )}
+                {!searching && searchQuery.length < 2 && searchQuery.length > 0 && (
+                  <p className="text-center text-on-surface-variant font-label text-xs py-2">Type at least 2 characters...</p>
+                )}
+                {searchResults.map(user => {
+                  const isFriend = friendIds.has(user.id);
+                  const isPending = outgoingIds.has(user.id);
+                  const isLoading = pendingActions.has(user.id);
+                  return (
+                    <div key={user.id} className="flex items-center gap-3 bg-surface-container-low p-4 rounded-xl">
+                      <img
+                        src={user.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${user.username}`}
+                        className="w-10 h-10 rounded-xl object-cover"
+                        alt=""
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-headline font-bold text-sm uppercase truncate">{user.username}</p>
+                        <p className="font-label text-[10px] text-on-surface-variant">{user.streak} 🔥 · Lvl {user.level}</p>
+                      </div>
+                      {isFriend ? (
+                        <span className="text-[10px] font-bold text-primary-container font-label tracking-widest uppercase">Friends</span>
+                      ) : isPending ? (
+                        <span className="text-[10px] font-bold text-on-surface-variant font-label tracking-widest uppercase">Pending</span>
+                      ) : (
+                        <button
+                          onClick={() => handleSendRequest(user.id)}
+                          disabled={isLoading}
+                          className="bg-primary-container text-on-primary-container text-xs font-bold px-3 py-2 rounded-lg active:scale-95 transition-transform disabled:opacity-50"
+                        >
+                          {isLoading ? '...' : 'Add'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    </section>
   );
 };
 
@@ -1217,6 +1716,9 @@ const User = ({
         </div>
       </section>
 
+      {/* Friends */}
+      <FriendsSection profile={profile} />
+
       {/* Sign Out */}
       <button
         onClick={onSignOut}
@@ -1244,9 +1746,9 @@ const User = ({
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               className="fixed bottom-0 left-0 right-0 bg-surface-container rounded-t-3xl max-h-[85vh] overflow-y-auto z-50 p-6 safe-bottom"
             >
-              <div className="w-12 h-1 bg-on-surface-variant/20 rounded-full mx-auto mb-6" />
-
-              <div className="flex justify-between items-start mb-6 sticky top-0 bg-surface-container z-10">
+              <div className="sticky top-0 bg-surface-container z-10 pt-2 pb-4">
+                <div className="w-12 h-1 bg-on-surface-variant/20 rounded-full mx-auto mb-6" />
+              <div className="flex justify-between items-start">
                 <div>
                   <h3 className="font-headline text-2xl font-black uppercase tracking-tight text-on-surface">Rozetler & Askeri Nişan</h3>
                   <p className="font-label text-[10px] tracking-widest text-primary-container mt-1 uppercase">Sistem Nasıl İşler?</p>
@@ -1254,6 +1756,7 @@ const User = ({
                 <button onClick={() => setShowBadgeHelp(false)} className="bg-surface-container-low text-on-surface-variant p-2 rounded-full flex-shrink-0">
                   <Close className="w-5 h-5" />
                 </button>
+              </div>
               </div>
 
               <div className="space-y-6 text-on-surface-variant text-sm leading-relaxed pb-32">
@@ -1302,6 +1805,7 @@ export default function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [userTasks, setUserTasks] = useState<UserTask[]>([]);
   const [dailyTasks, setDailyTasks] = useState<DailyTask[]>([]);
+  const dayCompletedRef = useRef<string | null>(null);
 
   // Auth listener
   useEffect(() => {
@@ -1322,8 +1826,12 @@ export default function App() {
 
   // Load daily tasks when userTasks change
   useEffect(() => {
-    if (session?.user && userTasks.length > 0) {
-      loadDailyTasks();
+    if (session?.user) {
+      if (userTasks.length > 0) {
+        loadDailyTasks();
+      } else {
+        setDailyTasks([]);
+      }
     }
   }, [userTasks, session]);
 
@@ -1445,6 +1953,11 @@ export default function App() {
         : { task_name: ut.task_name, completed: false };
     });
     setDailyTasks(merged);
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (merged.length > 0 && merged.every((t) => t.completed)) {
+      dayCompletedRef.current = todayStr;
+    }
   };
 
   const toggleTask = async (taskName: string) => {
@@ -1474,7 +1987,8 @@ export default function App() {
       const updatedTasks = dailyTasks.map((t) => (t.task_name === taskName ? { ...t, completed: newCompleted } : t));
       const allCompleted = updatedTasks.every((t) => t.completed);
 
-      if (allCompleted && newCompleted) {
+      if (allCompleted && newCompleted && dayCompletedRef.current !== today) {
+        dayCompletedRef.current = today;
         await completeDayAndUpdateStreak();
       }
     } catch (error: any) {
@@ -1549,7 +2063,7 @@ export default function App() {
       .eq('user_id', session.user.id)
       .eq('date', yesterdayStr);
 
-    const yesterdayAllCompleted = yesterdayTasks && yesterdayTasks.length >= userTasks.length && yesterdayTasks.every((t: any) => t.completed);
+    const yesterdayAllCompleted = yesterdayTasks && yesterdayTasks.length > 0 && yesterdayTasks.every((t: any) => t.completed);
     const newStreak = yesterdayAllCompleted || profile.streak === 0 ? profile.streak + 1 : 1;
 
     const { data } = await supabase
@@ -1672,7 +2186,6 @@ export default function App() {
             <React.Fragment key="history">
               <History
                 session={session}
-                userTasks={userTasks}
                 profile={profile}
               />
             </React.Fragment>
