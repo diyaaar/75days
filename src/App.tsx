@@ -809,12 +809,14 @@ const Home = ({
   userTasks,
   onToggleTask,
   onUploadTaskPhoto,
+  onSaveReminder,
 }: {
   profile: Profile;
   dailyTasks: DailyTask[];
   userTasks: UserTask[];
   onToggleTask: (name: string) => void;
   onUploadTaskPhoto: (taskName: string, file: File) => void;
+  onSaveReminder: (taskId: string, time: string | null) => Promise<void>;
 }) => {
   const totalTasks = userTasks.length || 6;
   const completedCount = dailyTasks.filter((t) => t.completed).length;
@@ -823,6 +825,29 @@ const Home = ({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
   const [selectedTaskForPhoto, setSelectedTaskForPhoto] = useState<string | null>(null);
+
+  // Hatırlatıcı alt-paneli (anasayfadan doğrudan kurma/düzenleme)
+  const [reminderTask, setReminderTask] = useState<UserTask | null>(null);
+  const [reminderEnabled, setReminderEnabled] = useState(false);
+  const [reminderTime, setReminderTime] = useState('07:00');
+  const [savingReminder, setSavingReminder] = useState(false);
+
+  const openReminderSheet = (ut: UserTask) => {
+    setReminderTask(ut);
+    setReminderEnabled(!!ut.reminder_time);
+    setReminderTime(ut.reminder_time || '07:00');
+  };
+
+  const handleSaveReminder = async () => {
+    if (!reminderTask) return;
+    setSavingReminder(true);
+    try {
+      await onSaveReminder(reminderTask.id, reminderEnabled ? reminderTime : null);
+      setReminderTask(null);
+    } finally {
+      setSavingReminder(false);
+    }
+  };
 
   const handleTaskClick = (taskName: string) => {
     setSelectedTaskForPhoto(taskName);
@@ -945,8 +970,23 @@ const Home = ({
                       )}
                     </div>
                   </div>
-                  <div className={cn("task-checkbox-btn", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
-                    {dt.completed ? <CheckCircle className="w-5 h-5" /> : <div className="w-4 h-4 border-2 border-current rounded-full" />}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openReminderSheet(ut); }}
+                      className={cn(
+                        "icon-button w-9 h-9 rounded-lg transition-colors flex items-center justify-center",
+                        ut.reminder_time ? "text-yellow-400" : "text-on-surface-variant hover:text-primary-container"
+                      )}
+                      title={ut.reminder_time ? `Hatırlatıcı ${ut.reminder_time}` : "Hatırlatıcı kur"}
+                      aria-label="Hatırlatıcı kur"
+                    >
+                      <span className="material-symbols-outlined text-xl">
+                        {ut.reminder_time ? 'notifications_active' : 'notifications'}
+                      </span>
+                    </button>
+                    <div className={cn("task-checkbox-btn", dt.completed ? "bg-primary-container text-on-primary-container" : "bg-surface-container-highest text-on-surface-variant")}>
+                      {dt.completed ? <CheckCircle className="w-5 h-5" /> : <div className="w-4 h-4 border-2 border-current rounded-full" />}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -972,6 +1012,73 @@ const Home = ({
             setIsPhotoModalOpen(false);
             setSelectedTaskForPhoto(null);
           }} />
+        )}
+      </AnimatePresence>
+
+      {/* Hatırlatıcı alt-paneli */}
+      <AnimatePresence>
+        {reminderTask && (
+          <>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/70 z-50 backdrop-blur-sm" onClick={() => setReminderTask(null)} />
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 240 }}
+              className="fixed bottom-0 left-0 right-0 z-[55] bg-surface-container rounded-t-3xl max-w-md mx-auto"
+            >
+              <div className="p-6 space-y-5">
+                <div className="w-10 h-1 bg-on-surface-variant/20 rounded-full mx-auto" />
+                <div className="flex items-center justify-between">
+                  <h3 className="font-headline font-bold text-xl uppercase tracking-tight">Hatırlatıcı</h3>
+                  <button onClick={() => setReminderTask(null)} className="text-on-surface-variant">
+                    <Close className="w-5 h-5" />
+                  </button>
+                </div>
+                <p className="font-label text-[11px] text-on-surface-variant tracking-wide">
+                  <span className="text-on-surface font-bold uppercase">{reminderTask.task_name}</span> için her gün bildirim al.
+                </p>
+
+                <div className="flex items-center justify-between">
+                  <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">Günlük Hatırlatıcı</p>
+                  <button
+                    onClick={() => setReminderEnabled(!reminderEnabled)}
+                    className={cn('w-11 h-6 rounded-full transition-colors relative', reminderEnabled ? 'bg-primary-container' : 'bg-surface-container-highest')}
+                  >
+                    <span className={cn('absolute top-1 w-4 h-4 rounded-full bg-white transition-all', reminderEnabled ? 'left-6' : 'left-1')} />
+                  </button>
+                </div>
+
+                {reminderEnabled && (
+                  <div className="bg-surface-container-high rounded-2xl p-4 flex items-center gap-4">
+                    <span className="text-xl">🔔</span>
+                    <div className="flex-1">
+                      <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase mb-1">Her gün saat</p>
+                      <input
+                        type="time"
+                        value={reminderTime}
+                        onChange={(e) => setReminderTime(e.target.value)}
+                        className="bg-transparent font-headline font-bold text-2xl text-on-surface outline-none w-full"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pb-2">
+                  <button onClick={() => setReminderTask(null)} className="flex-1 py-3 rounded-xl bg-surface-container-high font-bold text-sm uppercase tracking-wider active:scale-95 transition-transform">
+                    İptal
+                  </button>
+                  <button
+                    onClick={handleSaveReminder}
+                    disabled={savingReminder}
+                    className="flex-1 py-3 rounded-xl bg-primary-container text-on-primary-container font-bold text-sm uppercase tracking-wider active:scale-95 transition-transform disabled:opacity-50"
+                  >
+                    {savingReminder ? 'Kaydediliyor...' : 'Kaydet'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
     </motion.div>
@@ -1119,9 +1226,22 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     setVideoPreview(URL.createObjectURL(file));
   };
 
+  // Yükleme sürerken sekme/uygulama kapatılmaya çalışılırsa uyar
+  useEffect(() => {
+    if (!posting && !uploadingVideo) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [posting, uploadingVideo]);
+
   const handlePost = async () => {
     if (!newPostContent.trim() && !newPostPhoto && !newPostVideo) return;
     setPosting(true);
+    // Medya yüklenirken ekranın uyumasını/uygulamanın askıya alınmasını engelle
+    let wakeLock: any = null;
+    if (newPostPhoto || newPostVideo) {
+      try { wakeLock = await (navigator as any).wakeLock?.request('screen'); } catch { /* desteklenmiyorsa yok say */ }
+    }
     try {
       let photoUrl: string | null = null;
       let photoDriveFileId: string | null = null;
@@ -1234,6 +1354,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
       // state'i temizleme — kullanıcı tekrar deneyebilsin
     } finally {
       setPosting(false);
+      try { await wakeLock?.release(); } catch { /* yok say */ }
     }
   };
 
@@ -1308,9 +1429,12 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                 </div>
               )}
               {(posting || uploadingVideo) && (
-                <div className="flex items-center gap-2 text-on-surface-variant text-xs">
-                  <span className="w-3 h-3 border-2 border-primary-container border-t-transparent rounded-full animate-spin" />
-                  {uploadingVideo ? "Video Drive'a yükleniyor..." : "Fotoğraf Drive'a yükleniyor..."}
+                <div className="flex items-start gap-2 bg-yellow-400/10 border border-yellow-400/30 rounded-xl p-3">
+                  <span className="w-3 h-3 mt-0.5 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                  <div className="text-xs">
+                    <p className="text-on-surface font-bold">{uploadingVideo ? "Video Drive'a yükleniyor..." : "Fotoğraf Drive'a yükleniyor..."}</p>
+                    <p className="text-yellow-400/90 font-label text-[10px] tracking-wide mt-0.5">Bitene kadar uygulamadan çıkma ⚠️</p>
+                  </div>
                 </div>
               )}
               <div className="flex justify-between items-center">
@@ -2722,6 +2846,7 @@ export default function App() {
                 userTasks={userTasks}
                 onToggleTask={toggleTask}
                 onUploadTaskPhoto={uploadTaskPhoto}
+                onSaveReminder={saveReminder}
               />
             </React.Fragment>
           )}
