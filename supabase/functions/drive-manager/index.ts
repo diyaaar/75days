@@ -93,9 +93,10 @@ function driveImageUrl(fileId: string): string {
 
 const TR_MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
 
-function turkishDateFolder(): string {
-  const now = new Date();
-  return `${now.getDate()} ${TR_MONTHS[now.getMonth()]} ${now.getFullYear()}`;
+function turkishDateFolder(isoDate?: string): string {
+  // isoDate: "2026-06-17" — yoksa bugün
+  const d = isoDate ? new Date(isoDate + 'T12:00:00Z') : new Date();
+  return `${d.getUTCDate()} ${TR_MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
 function sanitizeFilename(name: string): string {
@@ -246,6 +247,86 @@ async function handleUploadVideo(
   };
 }
 
+// ── ACTION: migrate_task_photos ───────────────────────────────────────────────
+// tasks tablosundaki geçmiş task fotoğraflarını Diyar/Bahar klasörlerine taşır
+async function handleMigrateTaskPhotos(
+  supabaseAdmin: ReturnType<typeof createClient>,
+) {
+  const token = await getAccessToken();
+
+  // Drive'da olmayan task fotoğraflarını çek
+  const { data: tasks, error } = await supabaseAdmin
+    .from('tasks')
+    .select('id, user_id, date, task_name, photo_url')
+    .not('photo_url', 'is', null)
+    .not('photo_url', 'like', 'https://drive.google.com%');
+
+  if (error) throw new Error(`Tasks sorgu hatası: ${error.message}`);
+  if (!tasks || tasks.length === 0) return { migrated: 0, message: 'Tüm task fotoğrafları zaten Drive\'da' };
+
+  // Kullanıcı → klasör ID önbelleği (tekrar tekrar profile sorgusu atmamak için)
+  const userFolderCache: Record<string, string> = {};
+
+  async function getUserFolder(userId: string): Promise<string> {
+    if (userFolderCache[userId]) return userFolderCache[userId];
+    const { data: p } = await supabaseAdmin.from('profiles').select('username').eq('id', userId).single();
+    const username = (p?.username || '').toLowerCase().trim();
+    let folderId: string;
+    if (username === 'diyar') {
+      folderId = Deno.env.get('DRIVE_FOLDER_DIYAR')!;
+    } else if (username === 'bahar') {
+      folderId = Deno.env.get('DRIVE_FOLDER_BAHAR')!;
+    } else {
+      const rootId = Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID')!;
+      const photosFolderId = await findOrCreateFolder(token, 'Photos', rootId);
+      folderId = await findOrCreateFolder(token, userId, photosFolderId);
+    }
+    userFolderCache[userId] = folderId;
+    return folderId;
+  }
+
+  let migrated = 0;
+  const errors: string[] = [];
+
+  for (const task of tasks) {
+    try {
+      const userFolderId = await getUserFolder(task.user_id);
+      const dateFolderName = turkishDateFolder(task.date);
+      const dateFolderId = await findOrCreateFolder(token, dateFolderName, userFolderId);
+
+      const url: string = task.photo_url;
+      const ext = url.split('?')[0].split('.').pop()?.toLowerCase() ?? 'jpg';
+      const filename = `${sanitizeFilename(task.task_name)}.${ext}`;
+      const mimeType = guessMimeType(url, false);
+
+      // Storage URL'sinden storage path çıkar
+      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+)$/);
+      let driveFileId: string;
+
+      if (storageMatch) {
+        const [, bucket, path] = storageMatch;
+        const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(bucket).download(path);
+        if (dlErr || !blob) throw new Error(`Storage indirme: ${dlErr?.message}`);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType, parents: [dateFolderId] });
+        await setPublicReadable(token, driveFile.id);
+        driveFileId = driveFile.id;
+      } else {
+        // Harici URL
+        const driveFile = await uploadFromUrl(token, url, filename, mimeType, dateFolderId);
+        driveFileId = driveFile.id;
+      }
+
+      await supabaseAdmin.from('tasks').update({ photo_url: driveImageUrl(driveFileId) }).eq('id', task.id);
+      migrated++;
+    } catch (err: unknown) {
+      errors.push(`Task ${task.id} (${task.task_name}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return { migrated, total: tasks.length, errors };
+}
+
 // ── ACTION: migrate_existing_posts ────────────────────────────────────────────
 // Mevcut tüm postların medyasını Drive'a taşır (tek seferlik)
 async function handleMigrateExistingPosts(
@@ -354,6 +435,11 @@ Deno.serve(async (req: Request) => {
 
     if (action === 'upload_video') {
       const result = await handleUploadVideo({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin);
+      return new Response(JSON.stringify(result), { headers: jsonHeaders });
+    }
+
+    if (action === 'migrate_task_photos') {
+      const result = await handleMigrateTaskPhotos(supabaseAdmin);
       return new Response(JSON.stringify(result), { headers: jsonHeaders });
     }
 

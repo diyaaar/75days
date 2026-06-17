@@ -1121,14 +1121,21 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   };
 
   const handleMigrateExisting = async () => {
-    if (!await requestConfirm({ title: "Drive'a Taşı", description: "Mevcut tüm post fotoğrafları ve videoları Google Drive'a taşınacak.", confirmLabel: 'Taşı' })) return;
+    if (!await requestConfirm({
+      title: "Drive'a Taşı",
+      description: "Tüm post fotoğrafları/videoları ve geçmiş task fotoğrafları Google Drive'a taşınacak. Birkaç dakika sürebilir.",
+      confirmLabel: 'Taşı',
+    })) return;
     setMigrating(true);
     try {
-      const { data, error } = await supabase.functions.invoke('drive-manager', {
-        body: { action: 'migrate_existing_posts' },
-      });
-      if (error) throw error;
-      toast.success(`${data.migrated} post Drive'a taşındı`, { duration: 5000 });
+      const [{ data: postsResult, error: postsErr }, { data: tasksResult, error: tasksErr }] = await Promise.all([
+        supabase.functions.invoke('drive-manager', { body: { action: 'migrate_existing_posts' } }),
+        supabase.functions.invoke('drive-manager', { body: { action: 'migrate_task_photos' } }),
+      ]);
+      if (postsErr) throw postsErr;
+      if (tasksErr) throw tasksErr;
+      const total = (postsResult?.migrated ?? 0) + (tasksResult?.migrated ?? 0);
+      toast.success(`${total} dosya Drive'a taşındı 🗂️`, { duration: 6000 });
       fetchPosts();
     } catch (err: any) {
       toast.error(err.message);
