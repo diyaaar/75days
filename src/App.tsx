@@ -81,7 +81,48 @@ interface UserTask {
   task_name: string;
   icon: string;
   sort_order: number;
+  reminder_time: string | null;
 }
+
+interface DialogConfig {
+  title: string;
+  description?: string;
+  confirmLabel?: string;
+  destructive?: boolean;
+}
+
+// =============================================
+// CONFIRM DIALOG COMPONENT
+// =============================================
+const ConfirmDialog = ({
+  open, title, description, confirmLabel = 'Onayla', destructive = false, onConfirm, onCancel,
+}: DialogConfig & { open: boolean; onConfirm: () => void; onCancel: () => void }) => {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="relative w-full max-w-sm bg-surface-container rounded-2xl p-6 space-y-4 shadow-2xl"
+      >
+        <h3 className="font-headline font-bold text-lg">{title}</h3>
+        {description && <p className="text-on-surface-variant text-sm leading-relaxed">{description}</p>}
+        <div className="flex gap-3 pt-1">
+          <button onClick={onCancel} className="flex-1 py-3 rounded-xl bg-surface-container-high font-bold text-sm uppercase tracking-wider active:scale-95 transition-transform">
+            İptal
+          </button>
+          <button
+            onClick={onConfirm}
+            className={cn('flex-1 py-3 rounded-xl font-bold text-sm uppercase tracking-wider active:scale-95 transition-transform', destructive ? 'bg-error text-on-error' : 'bg-primary-container text-on-primary-container')}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
 
 interface DailyTask {
   id?: string;
@@ -894,6 +935,9 @@ const Home = ({
                     <div>
                       <span className="font-label text-[10px] text-primary-container font-black tracking-widest uppercase mb-1 block">Task 0{idx + 1}</span>
                       <h4 className="font-headline text-lg font-bold leading-tight">{ut.task_name}</h4>
+                      {ut.reminder_time && (
+                        <span className="font-label text-[9px] text-yellow-400 tracking-widest uppercase">🔔 {ut.reminder_time}</span>
+                      )}
                       {dt.photo_url && (
                         <div className="mt-2 w-16 h-16 rounded-lg overflow-hidden">
                           <img src={dt.photo_url} className="w-full h-full object-cover" alt="task" />
@@ -947,6 +991,17 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const [uploadingVideo, setUploadingVideo] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [posting, setPosting] = useState(false);
+  const [feedDialog, setFeedDialog] = useState<(DialogConfig & { onConfirm: () => void; onCancel: () => void }) | null>(null);
+
+  const requestConfirm = useCallback((config: DialogConfig): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      setFeedDialog({
+        ...config,
+        onConfirm: () => { resolve(true); setFeedDialog(null); },
+        onCancel: () => { resolve(false); setFeedDialog(null); },
+      });
+    });
+  }, []);
   const [showCompose, setShowCompose] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -1022,7 +1077,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   };
 
   const handleDeletePost = async (postId: string) => {
-    if (!confirm('Are you sure you want to delete this post?')) return;
+    if (!await requestConfirm({ title: 'Postu Sil', description: 'Bu post kalıcı olarak silinecek.', destructive: true, confirmLabel: 'Sil' })) return;
     // Optimistic update — hemen listeden kaldır
     setPosts(prev => prev.filter(p => p.id !== postId));
     try {
@@ -1043,15 +1098,15 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     }
   };
 
-  const clearPhoto = () => {
-    if (!confirm('Fotoğrafı kaldırmak istiyor musun?')) return;
+  const clearPhoto = async () => {
+    if (!await requestConfirm({ title: 'Fotoğrafı Kaldır', confirmLabel: 'Kaldır' })) return;
     if (photoPreview) URL.revokeObjectURL(photoPreview);
     setNewPostPhoto(null);
     setPhotoPreview(null);
   };
 
-  const clearVideo = () => {
-    if (!confirm('Videoyu kaldırmak istiyor musun?')) return;
+  const clearVideo = async () => {
+    if (!await requestConfirm({ title: 'Videoyu Kaldır', confirmLabel: 'Kaldır' })) return;
     if (videoPreview) URL.revokeObjectURL(videoPreview);
     setNewPostVideo(null);
     setVideoPreview(null);
@@ -1066,7 +1121,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   };
 
   const handleMigrateExisting = async () => {
-    if (!confirm('Mevcut tüm post fotoğrafları ve videoları Drive\'a taşınacak. Devam?')) return;
+    if (!await requestConfirm({ title: "Drive'a Taşı", description: "Mevcut tüm post fotoğrafları ve videoları Google Drive'a taşınacak.", confirmLabel: 'Taşı' })) return;
     setMigrating(true);
     try {
       const { data, error } = await supabase.functions.invoke('drive-manager', {
@@ -1332,6 +1387,16 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
           </p>
         </div>
       )}
+      <ConfirmDialog
+        open={!!feedDialog}
+        title={feedDialog?.title ?? ''}
+        description={feedDialog?.description}
+        confirmLabel={feedDialog?.confirmLabel}
+        destructive={feedDialog?.destructive}
+        onConfirm={feedDialog?.onConfirm ?? (() => {})}
+        onCancel={feedDialog?.onCancel ?? (() => {})}
+      />
+
       {posts.map((post) => (
         <article key={post.id} className="space-y-4">
           <div className="flex items-start justify-between">
@@ -1779,6 +1844,7 @@ const User = ({
   onUpdateProfile,
   onAddTask,
   onDeleteTask,
+  onSaveReminder,
 }: {
   profile: Profile;
   userTasks: UserTask[];
@@ -1786,6 +1852,7 @@ const User = ({
   onUpdateProfile: (updates: Partial<Profile>, avatarFile?: File) => Promise<void>;
   onAddTask: (taskName: string, icon: string) => Promise<void>;
   onDeleteTask: (taskId: string) => Promise<void>;
+  onSaveReminder: (taskId: string, time: string | null) => Promise<void>;
 }) => {
   const [editing, setEditing] = useState(false);
   const [editUsername, setEditUsername] = useState(profile.username || '');
@@ -1795,6 +1862,20 @@ const User = ({
   const [newTaskIcon, setNewTaskIcon] = useState(DEFAULT_NEW_TASK_ICON);
   const [showAddTask, setShowAddTask] = useState(false);
   const [showBadgeHelp, setShowBadgeHelp] = useState(false);
+  const [reminderTask, setReminderTask] = useState<UserTask | null>(null);
+  const [reminderTime, setReminderTime] = useState('07:00');
+  const [savingReminder, setSavingReminder] = useState(false);
+  const [userDialog, setUserDialog] = useState<(DialogConfig & { onConfirm: () => void; onCancel: () => void }) | null>(null);
+
+  const requestConfirm = useCallback((config: DialogConfig): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      setUserDialog({
+        ...config,
+        onConfirm: () => { resolve(true); setUserDialog(null); },
+        onCancel: () => { resolve(false); setUserDialog(null); },
+      });
+    });
+  }, []);
 
   const earnedBadges = BADGES.filter((b) => profile.total_days >= b.requirement);
 
@@ -1836,12 +1917,45 @@ const User = ({
   };
 
   const handleDeleteTask = async (taskId: string, taskName: string) => {
-    if (!confirm(`Delete "${taskName}"?`)) return;
+    if (!await requestConfirm({ title: `"${taskName}" Silinecek`, description: 'Bu task\'i silmek istiyor musun?', destructive: true, confirmLabel: 'Sil' })) return;
     try {
       await onDeleteTask(taskId);
-      toast.success('Task removed!');
+      toast.success('Task silindi');
     } catch (error: any) {
       toast.error(error.message);
+    }
+  };
+
+  const openReminderModal = (task: UserTask) => {
+    setReminderTime(task.reminder_time || '07:00');
+    setReminderTask(task);
+  };
+
+  const handleSaveReminder = async (time: string) => {
+    if (!reminderTask) return;
+    setSavingReminder(true);
+    try {
+      await onSaveReminder(reminderTask.id, time);
+      toast.success('Hatırlatıcı kaydedildi 🔔');
+      setReminderTask(null);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setSavingReminder(false);
+    }
+  };
+
+  const handleRemoveReminder = async () => {
+    if (!reminderTask) return;
+    setSavingReminder(true);
+    try {
+      await onSaveReminder(reminderTask.id, null);
+      toast.success('Hatırlatıcı kaldırıldı');
+      setReminderTask(null);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setSavingReminder(false);
     }
   };
 
@@ -2026,15 +2140,82 @@ const User = ({
                 <div className="text-primary-container">
                   {(TASK_ICON_MAP[task.icon] && React.createElement(TASK_ICON_MAP[task.icon], { className: 'w-5 h-5' })) || <CheckCircle className="w-5 h-5" />}
                 </div>
-                <span className="font-headline font-bold text-sm uppercase">{task.task_name}</span>
+                <div>
+                  <span className="font-headline font-bold text-sm uppercase">{task.task_name}</span>
+                  {task.reminder_time && (
+                    <p className="font-label text-[10px] text-yellow-400 tracking-wider mt-0.5">🔔 {task.reminder_time}</p>
+                  )}
+                </div>
               </div>
-              <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="icon-button w-6 h-6 text-on-surface-variant hover:text-error transition-colors">
-                <Delete className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => openReminderModal(task)}
+                  className={cn('icon-button w-7 h-7 rounded-lg transition-colors', task.reminder_time ? 'text-yellow-400' : 'text-on-surface-variant/40 hover:text-on-surface-variant')}
+                  title="Hatırlatıcı ayarla"
+                >
+                  <span className="material-symbols-outlined text-base">notifications</span>
+                </button>
+                <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="icon-button w-6 h-6 text-on-surface-variant hover:text-error transition-colors">
+                  <Delete className="w-5 h-5" />
+                </button>
+              </div>
             </div>
           ))}
         </div>
       </section>
+
+      {/* Reminder Modal */}
+      <AnimatePresence>
+        {reminderTask && (
+          <>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 z-50 backdrop-blur-sm" onClick={() => setReminderTask(null)} />
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="fixed bottom-0 left-0 right-0 z-[55] bg-surface-container rounded-t-3xl p-6 space-y-5 max-w-md mx-auto"
+            >
+              <div className="w-10 h-1 bg-on-surface-variant/20 rounded-full mx-auto" />
+              <div>
+                <h3 className="font-headline font-bold text-xl uppercase tracking-tight">Hatırlatıcı</h3>
+                <p className="font-label text-[10px] text-primary-container tracking-widest uppercase mt-1">{reminderTask.task_name}</p>
+              </div>
+              <div className="bg-surface-container-high rounded-2xl p-4 flex items-center gap-4">
+                <span className="text-2xl">🔔</span>
+                <div className="flex-1">
+                  <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase mb-1">Her gün saat</p>
+                  <input
+                    type="time"
+                    value={reminderTime}
+                    onChange={(e) => setReminderTime(e.target.value)}
+                    className="bg-transparent font-headline font-bold text-2xl text-on-surface outline-none w-full"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-3">
+                {reminderTask.reminder_time && (
+                  <button onClick={handleRemoveReminder} disabled={savingReminder} className="flex-1 py-3 rounded-xl bg-surface-container-high text-on-surface-variant font-bold text-sm uppercase tracking-wider disabled:opacity-40 active:scale-95 transition-transform">
+                    Kaldır
+                  </button>
+                )}
+                <button onClick={() => handleSaveReminder(reminderTime)} disabled={savingReminder} className="flex-1 py-3 rounded-xl bg-primary-container text-on-primary-container font-bold text-sm uppercase tracking-wider disabled:opacity-40 active:scale-95 transition-transform">
+                  {savingReminder ? '...' : 'Kaydet'}
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      <ConfirmDialog
+        open={!!userDialog}
+        title={userDialog?.title ?? ''}
+        description={userDialog?.description}
+        confirmLabel={userDialog?.confirmLabel}
+        destructive={userDialog?.destructive}
+        onConfirm={userDialog?.onConfirm ?? (() => {})}
+        onCancel={userDialog?.onCancel ?? (() => {})}
+      />
 
       {/* Friends */}
       <FriendsSection profile={profile} />
@@ -2261,6 +2442,12 @@ export default function App() {
     setUserTasks((prev) => prev.filter((t) => t.id !== taskId));
   };
 
+  const saveReminder = async (taskId: string, time: string | null) => {
+    const { error } = await supabase.from('user_tasks').update({ reminder_time: time }).eq('id', taskId);
+    if (error) throw error;
+    setUserTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, reminder_time: time } : t));
+  };
+
   // ---- DAILY TASKS ----
   const loadDailyTasks = async () => {
     const today = new Date().toISOString().split('T')[0];
@@ -2319,14 +2506,24 @@ export default function App() {
   const uploadTaskPhoto = async (taskName: string, file: File) => {
     try {
       const today = new Date().toISOString().split('T')[0];
-      const ext = file.name.split('.').pop();
+      const ext = file.name.split('.').pop() ?? 'jpg';
       const path = `${session.user.id}/${today}_${taskName.replace(/\s/g, '_')}.${ext}`;
 
       const { error: uploadError } = await supabase.storage.from('task_photos').upload(path, file, { upsert: true });
       if (uploadError) throw uploadError;
 
-      const { data: urlData } = supabase.storage.from('task_photos').getPublicUrl(path);
-      const photoUrl = urlData.publicUrl;
+      // Drive'a yükle (Diyar/Bahar klasör yapısı)
+      let photoUrl: string;
+      const { data: driveResult } = await supabase.functions.invoke('drive-manager', {
+        body: { action: 'upload_task_photo', staging_path: path, user_id: session.user.id, task_name: taskName },
+      });
+      if (driveResult?.photo_url) {
+        photoUrl = driveResult.photo_url;
+      } else {
+        // Drive başarısız → Storage URL fallback
+        const { data: urlData } = supabase.storage.from('task_photos').getPublicUrl(path);
+        photoUrl = urlData.publicUrl;
+      }
 
       // Upsert the task with photo
       await supabase.from('tasks').upsert(
@@ -2499,6 +2696,7 @@ export default function App() {
                 onUpdateProfile={updateProfile}
                 onAddTask={addUserTask}
                 onDeleteTask={deleteUserTask}
+                onSaveReminder={saveReminder}
               />
             </React.Fragment>
           )}

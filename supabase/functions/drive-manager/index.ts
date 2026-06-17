@@ -91,6 +91,17 @@ function driveImageUrl(fileId: string): string {
   return `https://drive.google.com/uc?export=view&id=${fileId}`;
 }
 
+const TR_MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
+
+function turkishDateFolder(): string {
+  const now = new Date();
+  return `${now.getDate()} ${TR_MONTHS[now.getMonth()]} ${now.getFullYear()}`;
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[/\\?%*:|"<>]/g, '_').trim();
+}
+
 function driveVideoEmbedUrl(fileId: string): string {
   return `https://drive.google.com/file/d/${fileId}/preview`;
 }
@@ -137,6 +148,57 @@ function guessMimeType(url: string, isVideo: boolean): string {
   }
   const map: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic' };
   return map[ext] ?? 'image/jpeg';
+}
+
+// ── ACTION: upload_task_photo ─────────────────────────────────────────────────
+// Task fotoğrafları Diyar/Bahar klasörüne tarih alt klasörüyle gider
+async function handleUploadTaskPhoto(
+  payload: { staging_path: string; user_id: string; task_name: string },
+  supabaseAdmin: ReturnType<typeof createClient>,
+) {
+  const { staging_path, user_id, task_name } = payload;
+  if (!staging_path || !user_id || !task_name) throw new Error('staging_path, user_id ve task_name zorunlu');
+
+  // Kullanıcının username'ini çek
+  const { data: profileData } = await supabaseAdmin
+    .from('profiles')
+    .select('username')
+    .eq('id', user_id)
+    .single();
+  const username = (profileData?.username || '').toLowerCase().trim();
+
+  // Username'e göre kullanıcı klasör ID'si seç
+  let userFolderId: string;
+  if (username === 'diyar') {
+    userFolderId = Deno.env.get('DRIVE_FOLDER_DIYAR')!;
+  } else if (username === 'bahar') {
+    userFolderId = Deno.env.get('DRIVE_FOLDER_BAHAR')!;
+  } else {
+    // Bilinmeyen kullanıcı → kök altında genel Photos klasörü
+    const token0 = await getAccessToken();
+    const rootId = Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID')!;
+    const photosFolderId = await findOrCreateFolder(token0, 'Photos', rootId);
+    userFolderId = await findOrCreateFolder(token0, user_id, photosFolderId);
+  }
+
+  const token = await getAccessToken();
+
+  // Türkçe tarih klasörü: "17 Haz 2026"
+  const dateFolderName = turkishDateFolder();
+  const dateFolderId = await findOrCreateFolder(token, dateFolderName, userFolderId);
+
+  // Dosya adı = task ismi
+  const ext = staging_path.split('.').pop()?.toLowerCase() ?? 'jpg';
+  const filename = `${sanitizeFilename(task_name)}.${ext}`;
+  const mimeMap: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic' };
+  const mimeType = mimeMap[ext] ?? 'image/jpeg';
+
+  const driveFile = await uploadFromStorage(token, supabaseAdmin, staging_path, filename, mimeType, dateFolderId);
+
+  return {
+    drive_file_id: driveFile.id,
+    photo_url: driveImageUrl(driveFile.id),
+  };
 }
 
 // ── ACTION: upload_photo ──────────────────────────────────────────────────────
@@ -279,6 +341,11 @@ Deno.serve(async (req: Request) => {
 
     const body = await req.json();
     const { action, ...payload } = body;
+
+    if (action === 'upload_task_photo') {
+      const result = await handleUploadTaskPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin);
+      return new Response(JSON.stringify(result), { headers: jsonHeaders });
+    }
 
     if (action === 'upload_photo') {
       const result = await handleUploadPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin);
