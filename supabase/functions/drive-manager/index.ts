@@ -231,19 +231,28 @@ async function handleUploadVideo(
 }
 
 // ── ACTION: migrate_task_photos ───────────────────────────────────────────────
-async function handleMigrateTaskPhotos(supabaseAdmin: ReturnType<typeof createClient>) {
+// Supabase Storage'daki task fotoğraflarını Diyar/Bahar tarih klasörlerine taşır
+// Timeout güvenliği için batch_size kadar işler, kalanı döner
+async function handleMigrateTaskPhotos(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  batchSize = 5,
+) {
   const token = await getAccessToken();
-  const { data: tasks, error } = await supabaseAdmin
+
+  // Supabase Storage URL'si olan task fotoğraflarını çek
+  const { data: allTasks, error } = await supabaseAdmin
     .from('tasks')
     .select('id, user_id, date, task_name, photo_url')
     .not('photo_url', 'is', null)
-    .not('photo_url', 'like', 'https://lh3.googleusercontent.com%')
-    .not('photo_url', 'like', 'https://drive.google.com%');
+    .like('photo_url', 'https://%supabase.co%');
 
   if (error) throw new Error(`Tasks sorgu hatası: ${error.message}`);
-  if (!tasks || tasks.length === 0) return { migrated: 0, message: "Tüm task fotoğrafları zaten Drive'da" };
+  const remaining = (allTasks || []).length;
+  if (remaining === 0) return { migrated: 0, remaining: 0, message: "Tüm task fotoğrafları zaten Drive'da" };
 
+  const tasks = allTasks.slice(0, batchSize);
   const folderCache: Record<string, string> = {};
+
   async function getUserFolder(userId: string): Promise<string> {
     if (folderCache[userId]) return folderCache[userId];
     const folderId = await getUserDriveRootFolder(token, supabaseAdmin, userId);
@@ -258,57 +267,78 @@ async function handleMigrateTaskPhotos(supabaseAdmin: ReturnType<typeof createCl
     try {
       const userFolderId = await getUserFolder(task.user_id);
       const dateFolderId = await findOrCreateFolder(token, turkishDateFolder(task.date), userFolderId);
+
       const url: string = task.photo_url;
-      const ext = url.split('?')[0].split('.').pop()?.toLowerCase() ?? 'jpg';
+      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+?)(\?.*)?$/);
+      if (!storageMatch) throw new Error(`Storage path çıkarılamadı: ${url}`);
+      const [, bucket, path] = storageMatch;
+
+      const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(bucket).download(path);
+      if (dlErr || !blob) throw new Error(`Storage indirme: ${dlErr?.message}`);
+
+      const ext = path.split('.').pop()?.toLowerCase() ?? 'jpg';
       const filename = `${sanitizeFilename(task.task_name)}.${ext}`;
-      const mimeType = guessMimeType(url, false);
+      const mimeType = guessMimeType(path, false);
 
-      let driveFileId: string;
-      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+)$/);
-      if (storageMatch) {
-        const [, bucket, path] = storageMatch;
-        const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(bucket).download(path);
-        if (dlErr || !blob) throw new Error(`Storage indirme: ${dlErr?.message}`);
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType, parents: [dateFolderId] });
-        await setPublicReadable(token, driveFile.id);
-        driveFileId = driveFile.id;
-      } else {
-        const driveFile = await uploadFromUrl(token, url, filename, mimeType, dateFolderId);
-        driveFileId = driveFile.id;
-      }
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType, parents: [dateFolderId] });
+      await setPublicReadable(token, driveFile.id);
 
-      await supabaseAdmin.from('tasks').update({ photo_url: driveImageUrl(driveFileId) }).eq('id', task.id);
+      await supabaseAdmin.from('tasks').update({ photo_url: driveImageUrl(driveFile.id) }).eq('id', task.id);
       migrated++;
     } catch (err: unknown) {
       errors.push(`Task ${task.id} (${task.task_name}): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  return { migrated, total: tasks.length, errors };
+  return { migrated, remaining: remaining - migrated, errors };
 }
 
 // ── ACTION: migrate_existing_posts ────────────────────────────────────────────
-// Feed postlarındaki fotoğrafları Diyar/Bahar root klasörüne direkt taşır
-async function handleMigrateExistingPosts(supabaseAdmin: ReturnType<typeof createClient>) {
+// Feed postlarını Diyar/Bahar root klasörüne taşır.
+// İki grubu işler:
+//   1) Henüz hiç migrate edilmemiş (photo_drive_file_id NULL, storage URL)
+//   2) Yanlış yere migrate edilmiş (eski drive.google.com URL'leri → doğru yere taşı)
+async function handleMigrateExistingPosts(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  batchSize = 5,
+) {
   const token = await getAccessToken();
-
-  const { data: posts, error } = await supabaseAdmin
-    .from('social_feed')
-    .select('id, user_id, photo_url, video_drive_file_id, media_type')
-    .not('photo_url', 'is', null)
-    .is('photo_drive_file_id', null);
-
-  if (error) throw new Error(`Post sorgu hatası: ${error.message}`);
-  if (!posts || posts.length === 0) return { migrated: 0, message: 'Tüm postlar zaten migrate edilmiş' };
-
   const folderCache: Record<string, string> = {};
+
   async function getUserFolder(userId: string): Promise<string> {
     if (folderCache[userId]) return folderCache[userId];
     const folderId = await getUserDriveRootFolder(token, supabaseAdmin, userId);
     folderCache[userId] = folderId;
     return folderId;
   }
+
+  // Grup 1: Hiç migrate edilmemiş (storage URL'si var)
+  const { data: unmigrated } = await supabaseAdmin
+    .from('social_feed')
+    .select('id, user_id, photo_url, media_type')
+    .not('photo_url', 'is', null)
+    .like('photo_url', 'https://%supabase.co%')
+    .limit(batchSize);
+
+  // Grup 2: Eski drive.google.com URL'si olan (yanlış klasörde)
+  const { data: wrongLocation } = await supabaseAdmin
+    .from('social_feed')
+    .select('id, user_id, photo_url, media_type')
+    .not('photo_url', 'is', null)
+    .like('photo_url', 'https://drive.google.com%')
+    .limit(batchSize - (unmigrated?.length ?? 0));
+
+  const posts = [...(unmigrated ?? []), ...(wrongLocation ?? [])].slice(0, batchSize);
+
+  // Toplam kalan sayısı
+  const { count: totalRemaining } = await supabaseAdmin
+    .from('social_feed')
+    .select('id', { count: 'exact', head: true })
+    .not('photo_url', 'is', null)
+    .not('photo_url', 'like', 'https://lh3.googleusercontent.com%');
+
+  if (posts.length === 0) return { migrated: 0, remaining: 0, message: 'Tüm postlar migrate edildi' };
 
   let migrated = 0;
   const errors: string[] = [];
@@ -318,8 +348,6 @@ async function handleMigrateExistingPosts(supabaseAdmin: ReturnType<typeof creat
       const isVideo = post.media_type === 'video';
       const url: string = post.photo_url;
       const userRootFolderId = await getUserFolder(post.user_id);
-
-      // Videolar Videos/ alt klasörüne, fotoğraflar direkt root'a
       const targetFolderId = isVideo
         ? await findOrCreateFolder(token, 'Videos', userRootFolderId)
         : userRootFolderId;
@@ -329,16 +357,19 @@ async function handleMigrateExistingPosts(supabaseAdmin: ReturnType<typeof creat
       const mimeType = guessMimeType(url, isVideo);
 
       let driveFileId: string;
-      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+)$/);
+
+      // Storage URL → direkt indir
+      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+?)(\?.*)?$/);
       if (storageMatch) {
         const [, bucket, path] = storageMatch;
         const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(bucket).download(path);
-        if (dlErr || !blob) throw new Error(`Storage indirme hatası: ${dlErr?.message}`);
+        if (dlErr || !blob) throw new Error(`Storage indirme: ${dlErr?.message}`);
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType, parents: [targetFolderId] });
         await setPublicReadable(token, driveFile.id);
         driveFileId = driveFile.id;
       } else {
+        // Drive URL (yanlış konumda) → URL'den indir
         const driveFile = await uploadFromUrl(token, url, filename, mimeType, targetFolderId);
         driveFileId = driveFile.id;
       }
@@ -357,7 +388,7 @@ async function handleMigrateExistingPosts(supabaseAdmin: ReturnType<typeof creat
     }
   }
 
-  return { migrated, total: posts.length, errors };
+  return { migrated, remaining: (totalRemaining ?? 0) - migrated, errors };
 }
 
 // ── MAIN HANDLER ─────────────────────────────────────────────────────────────

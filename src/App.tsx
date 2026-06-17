@@ -1123,7 +1123,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const handleMigrateExisting = async () => {
     if (!await requestConfirm({
       title: "Drive'a Taşı",
-      description: "Tüm post fotoğrafları/videoları ve geçmiş task fotoğrafları Google Drive'a taşınacak. Birkaç dakika sürebilir.",
+      description: "Post ve task fotoğrafları Drive'a taşınacak. Timeout nedeniyle 5'er 5'er işlenir — tüm dosyalar taşınana kadar tekrar bas.",
       confirmLabel: 'Taşı',
     })) return;
     setMigrating(true);
@@ -1134,8 +1134,15 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
       ]);
       if (postsErr) throw postsErr;
       if (tasksErr) throw tasksErr;
-      const total = (postsResult?.migrated ?? 0) + (tasksResult?.migrated ?? 0);
-      toast.success(`${total} dosya Drive'a taşındı 🗂️`, { duration: 6000 });
+
+      const thisBatch = (postsResult?.migrated ?? 0) + (tasksResult?.migrated ?? 0);
+      const remaining = (postsResult?.remaining ?? 0) + (tasksResult?.remaining ?? 0);
+
+      if (remaining > 0) {
+        toast(`${thisBatch} dosya taşındı — ${remaining} kaldı, tekrar bas 🔄`, { icon: '⏳', duration: 8000 });
+      } else {
+        toast.success(`Tümü Drive'a taşındı 🗂️`, { duration: 5000 });
+      }
       fetchPosts();
     } catch (err: any) {
       toast.error(err.message);
