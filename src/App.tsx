@@ -1178,6 +1178,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
           user_id: session.user.id,
           poster_name: profile?.username,
           content: newPostContent,
+          media_type: mediaType,
         },
       });
 
