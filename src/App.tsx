@@ -946,12 +946,14 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
   const [posting, setPosting] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const liveVideoRef = useRef<HTMLVideoElement>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
 
@@ -973,13 +975,14 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
 
     if (!feedData) return;
 
-    // Get profile data for each post
     const userIds = [...new Set(feedData.map((p: any) => p.user_id))];
-    const { data: profilesData } = await supabase.from('profiles').select('*').in('id', userIds);
-
-    // Get like counts and user likes
     const postIds = feedData.map((p: any) => p.id);
-    const { data: likesData } = await supabase.from('likes').select('post_id, user_id').in('post_id', postIds);
+
+    // profiles ve likes paralel çek
+    const [{ data: profilesData }, { data: likesData }] = await Promise.all([
+      supabase.from('profiles').select('*').in('id', userIds),
+      supabase.from('likes').select('post_id, user_id').in('post_id', postIds),
+    ]);
 
     const profileMap = (profilesData || []).reduce((acc: any, p: any) => {
       acc[p.id] = p;
@@ -1010,23 +1013,30 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   }, [fetchPosts]);
 
   const handleLike = async (postId: string, likedByMe: boolean) => {
+    // Optimistic update — anında UI'a yansıt
+    setPosts(prev => prev.map(p => p.id === postId ? {
+      ...p,
+      liked_by_me: !likedByMe,
+      like_count: likedByMe ? p.like_count - 1 : p.like_count + 1,
+    } : p));
     if (likedByMe) {
       await supabase.from('likes').delete().eq('post_id', postId).eq('user_id', session.user.id);
     } else {
       await supabase.from('likes').insert({ post_id: postId, user_id: session.user.id });
     }
-    fetchPosts();
   };
 
   const handleDeletePost = async (postId: string) => {
     if (!confirm('Are you sure you want to delete this post?')) return;
+    // Optimistic update — hemen listeden kaldır
+    setPosts(prev => prev.filter(p => p.id !== postId));
     try {
       const { error } = await supabase.from('social_feed').delete().eq('id', postId).eq('user_id', session.user.id);
       if (error) throw error;
       toast.success('Post deleted');
-      fetchPosts();
     } catch (err: any) {
       toast.error(err.message);
+      fetchPosts(); // hata varsa geri yükle
     }
   };
 
@@ -1055,13 +1065,18 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   };
 
   const startRecording = async () => {
-    if (newPostPhoto) {
-      toast.error('Fotoğraf varken video ekleyemezsin');
-      return;
-    }
+    if (isRecording) return; // çift başlatmayı engelle
+    if (newPostPhoto) { toast.error('Fotoğraf varken video ekleyemezsin'); return; }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode },
+        audio: true,
+      });
       streamRef.current = stream;
+      if (liveVideoRef.current) {
+        liveVideoRef.current.srcObject = stream;
+        liveVideoRef.current.play().catch(() => {});
+      }
       const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
         ? 'video/webm;codecs=vp9,opus'
         : 'video/webm';
@@ -1074,6 +1089,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         setVideoPreview(URL.createObjectURL(blob));
         stream.getTracks().forEach(t => t.stop());
         streamRef.current = null;
+        if (liveVideoRef.current) liveVideoRef.current.srcObject = null;
       };
       recorder.start(100);
       mediaRecorderRef.current = recorder;
@@ -1086,12 +1102,21 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop();
-    }
+    if (mediaRecorderRef.current?.state !== 'recording') return;
+    mediaRecorderRef.current.stop();
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     setIsRecording(false);
     setRecordingSeconds(0);
+  };
+
+  const flipCamera = async () => {
+    const next = facingMode === 'environment' ? 'user' : 'environment';
+    setFacingMode(next);
+    if (isRecording) {
+      stopRecording();
+      // kısa gecikme sonra yeni kamerayla yeniden başlat
+      setTimeout(() => { setFacingMode(next); }, 100);
+    }
   };
 
   const handlePost = async () => {
@@ -1139,6 +1164,23 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         setUploadingVideo(false);
       }
 
+      // Optimistic post — DB cevabı gelmeden feed'e ekle
+      const tempId = 'temp-' + Date.now();
+      setPosts(prev => [{
+        id: tempId,
+        user_id: session.user.id,
+        content: newPostContent,
+        type: 'manual_post',
+        photo_url: photoUrl,
+        video_drive_file_id: videoDriveFileId,
+        video_drive_url: videoDriveUrl,
+        media_type: mediaType,
+        created_at: new Date().toISOString(),
+        profiles: profile as Profile,
+        like_count: 0,
+        liked_by_me: false,
+      } as FeedItem, ...prev]);
+
       const { data: insertedPost, error } = await supabase.from('social_feed').insert({
         user_id: session.user.id,
         content: newPostContent,
@@ -1149,6 +1191,9 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         media_type: mediaType,
       }).select().single();
       if (error) throw error;
+
+      // Temp post'u gerçek ID ile güncelle
+      setPosts(prev => prev.map(p => p.id === tempId ? { ...p, id: insertedPost.id } : p));
 
       await supabase.functions.invoke('send-push-notification', {
         body: {
@@ -1190,12 +1235,38 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
       <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handlePhotoSelect} />
       <input type="file" ref={galleryInputRef} accept="image/*" className="hidden" onChange={handlePhotoSelect} />
-      {/* Video kayıt sırasında kırmızı pulsing gösterge */}
+      {/* Canlı kamera preview — kayıt sırasında */}
       {isRecording && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/80 text-white px-4 py-2 rounded-full">
-          <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-          <span className="font-mono font-bold">{recordingSeconds}s</span>
-          <span className="text-xs text-white/70">Kaydediliyor...</span>
+        <div className="fixed inset-0 z-40 bg-black flex flex-col">
+          <video
+            ref={liveVideoRef}
+            muted
+            playsInline
+            className="flex-1 w-full object-cover"
+            style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
+          />
+          {/* Üst bar */}
+          <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4 bg-gradient-to-b from-black/60 to-transparent">
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+              <span className="font-mono font-bold text-white text-lg">{recordingSeconds}s</span>
+            </div>
+            <button
+              onClick={flipCamera}
+              className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white"
+            >
+              <span className="material-symbols-outlined text-xl">flip_camera_ios</span>
+            </button>
+          </div>
+          {/* Stop butonu */}
+          <div className="absolute bottom-10 left-0 right-0 flex justify-center">
+            <button
+              onClick={stopRecording}
+              className="w-20 h-20 rounded-full bg-red-500 flex items-center justify-center shadow-2xl active:scale-90 transition-transform"
+            >
+              <span className="w-8 h-8 bg-white rounded-sm" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -1233,20 +1304,20 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                   <img src={photoPreview} className="w-full h-full object-cover" alt="preview" />
                   <button
                     onClick={clearPhoto}
-                    className="absolute top-2 right-2 icon-button w-6 h-6 bg-black/60 rounded-full"
+                    className="absolute top-2 right-2 w-8 h-8 bg-black text-white rounded-full flex items-center justify-center border-2 border-white/40 active:scale-90 transition-transform"
                   >
-                    <Close className="w-4 h-4 text-white" />
+                    <Close className="w-4 h-4" />
                   </button>
                 </div>
               )}
               {videoPreview && (
                 <div className="relative w-full rounded-xl overflow-hidden bg-black">
-                  <video src={videoPreview} controls className="w-full max-h-60 object-contain" />
+                  <video src={videoPreview} controls playsInline className="w-full max-h-60 object-contain" />
                   <button
                     onClick={clearVideo}
-                    className="absolute top-2 right-2 icon-button w-6 h-6 bg-black/60 rounded-full"
+                    className="absolute top-2 right-2 w-8 h-8 bg-black text-white rounded-full flex items-center justify-center border-2 border-white/40 active:scale-90 transition-transform"
                   >
-                    <Close className="w-4 h-4 text-white" />
+                    <Close className="w-4 h-4" />
                   </button>
                 </div>
               )}
@@ -1268,20 +1339,13 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                       </button>
                     </>
                   )}
-                  {!newPostPhoto && (
+                  {!newPostPhoto && !newPostVideo && (
                     <button
-                      onPointerDown={startRecording}
-                      onPointerUp={stopRecording}
-                      onPointerLeave={stopRecording}
-                      className={cn(
-                        'icon-button w-8 h-8 transition-all select-none touch-none',
-                        isRecording
-                          ? 'text-red-500 scale-125'
-                          : 'text-on-surface-variant hover:text-primary-container'
-                      )}
-                      title="Basılı tut: video kaydet"
+                      onClick={startRecording}
+                      className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors"
+                      title="Video kaydet"
                     >
-                      {isRecording ? <Stop className="w-5 h-5" /> : <Videocam className="w-5 h-5" />}
+                      <Videocam className="w-5 h-5" />
                     </button>
                   )}
                 </div>
