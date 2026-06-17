@@ -12,6 +12,7 @@ const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3/files';
 const MEDIA_BUCKET = 'task_photos';
 const TR_MONTHS = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
 
+// ── Yardımcılar ───────────────────────────────────────────────────────────────
 function uint8ArrayToBase64(bytes: Uint8Array): string {
   let binary = '';
   const chunkSize = 8192;
@@ -37,7 +38,7 @@ async function getAccessToken(): Promise<string> {
 }
 
 async function findOrCreateFolder(token: string, name: string, parentId: string): Promise<string> {
-  const q = encodeURIComponent(`name='${name}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const q = encodeURIComponent(`name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
   const res = await fetch(`${DRIVE_FILES_API}?q=${q}&fields=files(id)`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -85,13 +86,82 @@ async function setPublicReadable(token: string, fileId: string) {
   });
 }
 
-// img tag'lerde güvenilir çalışan URL
+async function getFileParents(token: string, fileId: string): Promise<string[]> {
+  const res = await fetch(`${DRIVE_FILES_API}/${fileId}?fields=parents&supportsAllDrives=true`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.parents ?? [];
+}
+
+// Dosyayı yeni klasöre TAŞIR (aynı fileId korunur → lh3 URL'si bozulmaz)
+async function moveFile(token: string, fileId: string, newParentId: string): Promise<boolean> {
+  const current = await getFileParents(token, fileId);
+  if (current.length === 1 && current[0] === newParentId) return false; // zaten doğru yerde
+  const params = new URLSearchParams({ addParents: newParentId, fields: 'id,parents', supportsAllDrives: 'true' });
+  if (current.length > 0) params.set('removeParents', current.join(','));
+  const res = await fetch(`${DRIVE_FILES_API}/${fileId}?${params.toString()}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Taşıma hatası (${fileId}): ${await res.text()}`);
+  return true;
+}
+
+// Dosyayı çöp kutusuna taşır (geri alınabilir, KALICI SİLME DEĞİL)
+async function trashFile(token: string, fileId: string): Promise<void> {
+  const res = await fetch(`${DRIVE_FILES_API}/${fileId}?supportsAllDrives=true`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true }),
+  });
+  if (!res.ok) throw new Error(`Çöpe taşıma hatası (${fileId}): ${await res.text()}`);
+}
+
+async function listFolderChildren(token: string, folderId: string): Promise<any[]> {
+  const out: any[] = [];
+  let pageToken = '';
+  do {
+    const params = new URLSearchParams({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields: 'nextPageToken, files(id,name,mimeType,size,createdTime,parents)',
+      pageSize: '1000',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await fetch(`${DRIVE_FILES_API}?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`Listeleme hatası (${folderId}): ${await res.text()}`);
+    const data = await res.json();
+    out.push(...(data.files ?? []));
+    pageToken = data.nextPageToken ?? '';
+  } while (pageToken);
+  return out;
+}
+
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+// ── URL üreticiler ────────────────────────────────────────────────────────────
 function driveImageUrl(fileId: string): string {
   return `https://lh3.googleusercontent.com/d/${fileId}`;
 }
-
 function driveVideoEmbedUrl(fileId: string): string {
   return `https://drive.google.com/file/d/${fileId}/preview`;
+}
+
+// Herhangi bir Drive URL'sinden / file_id alanından dosya kimliğini çıkarır
+function extractDriveId(url: string | null): string | null {
+  if (!url) return null;
+  let m = url.match(/lh3\.googleusercontent\.com\/d\/([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  m = url.match(/[?&]id=([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  m = url.match(/\/d\/([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  m = url.match(/\/file\/d\/([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  return null;
 }
 
 function turkishDateFolder(isoDate?: string): string {
@@ -101,6 +171,16 @@ function turkishDateFolder(isoDate?: string): string {
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[/\\?%*:|"<>]/g, '_').trim();
+}
+
+// İnsanca feed dosya adı: "Diyar 17 Haz 2026 14-30.jpg"
+function feedFilename(username: string | null, isoDateTime: string | undefined, ext: string): string {
+  const base = isoDateTime ? new Date(isoDateTime) : new Date();
+  const tr = new Date(base.getTime() + 3 * 3600 * 1000); // UTC+3
+  const date = `${tr.getUTCDate()} ${TR_MONTHS[tr.getUTCMonth()]} ${tr.getUTCFullYear()}`;
+  const time = `${String(tr.getUTCHours()).padStart(2, '0')}-${String(tr.getUTCMinutes()).padStart(2, '0')}`;
+  const who = username ? username.charAt(0).toUpperCase() + username.slice(1) : 'Feed';
+  return `${who} ${date} ${time}.${ext}`;
 }
 
 function guessMimeType(url: string, isVideo: boolean): string {
@@ -113,30 +193,30 @@ function guessMimeType(url: string, isVideo: boolean): string {
   return map[ext] ?? 'image/jpeg';
 }
 
-// Kullanıcının Drive root klasörünü döner (Diyar/Bahar veya fallback)
-async function getUserDriveRootFolder(
-  token: string,
-  supabaseAdmin: ReturnType<typeof createClient>,
-  userId: string,
-): Promise<string> {
-  const { data: p } = await supabaseAdmin.from('profiles').select('username').eq('id', userId).single();
-  const username = (p?.username || '').toLowerCase().trim();
+async function getUsername(supabaseAdmin: any, userId: string): Promise<string | null> {
+  const { data } = await supabaseAdmin.from('profiles').select('username').eq('id', userId).single();
+  return data?.username ?? null;
+}
+
+// Kullanıcının kişisel klasörü (Diyar/Bahar) — task fotoğrafları için
+async function getUserDriveRootFolder(token: string, supabaseAdmin: any, userId: string): Promise<string> {
+  const username = (await getUsername(supabaseAdmin, userId) || '').toLowerCase().trim();
   if (username === 'diyar') return Deno.env.get('DRIVE_FOLDER_DIYAR')!;
   if (username === 'bahar') return Deno.env.get('DRIVE_FOLDER_BAHAR')!;
-  // Bilinmeyen kullanıcı → kök altında user_id klasörü
   const rootId = Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID')!;
   return findOrCreateFolder(token, userId, rootId);
 }
 
-// Storage'dan indir, Drive'a yükle, staging'i sil
-async function uploadFromStorage(
-  token: string,
-  supabaseAdmin: ReturnType<typeof createClient>,
-  stagingPath: string,
-  driveFilename: string,
-  mimeType: string,
-  parentFolderId: string,
-): Promise<{ id: string; webViewLink: string }> {
+// Ortak Feed klasörü (ROOT/Feed) — TÜM feed foto & videoları buraya gider
+let _feedFolderCache: string | null = null;
+async function getFeedFolder(token: string): Promise<string> {
+  if (_feedFolderCache) return _feedFolderCache;
+  const rootId = Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID')!;
+  _feedFolderCache = await findOrCreateFolder(token, 'Feed', rootId);
+  return _feedFolderCache;
+}
+
+async function uploadFromStorage(token: string, supabaseAdmin: any, stagingPath: string, driveFilename: string, mimeType: string, parentFolderId: string) {
   const { data: fileBlob, error } = await supabaseAdmin.storage.from(MEDIA_BUCKET).download(stagingPath);
   if (error || !fileBlob) throw new Error(`Storage indirme hatası: ${error?.message}`);
   const bytes = new Uint8Array(await fileBlob.arrayBuffer());
@@ -146,83 +226,43 @@ async function uploadFromStorage(
   return driveFile;
 }
 
-// URL'den indir, Drive'a yükle
-async function uploadFromUrl(
-  token: string,
-  url: string,
-  driveFilename: string,
-  mimeType: string,
-  parentFolderId: string,
-): Promise<{ id: string; webViewLink: string }> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`URL indirme hatası: ${url}`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const driveFile = await uploadFileMultipart(token, bytes, { name: driveFilename, mimeType, parents: [parentFolderId] });
-  await setPublicReadable(token, driveFile.id);
-  return driveFile;
-}
-
 // ── ACTION: upload_task_photo ─────────────────────────────────────────────────
 // Task fotoğrafları → Diyar/Bahar → "17 Haz 2026" alt klasörü → task_name.jpg
-async function handleUploadTaskPhoto(
-  payload: { staging_path: string; user_id: string; task_name: string },
-  supabaseAdmin: ReturnType<typeof createClient>,
-) {
+async function handleUploadTaskPhoto(payload: any, supabaseAdmin: any) {
   const { staging_path, user_id, task_name } = payload;
   if (!staging_path || !user_id || !task_name) throw new Error('staging_path, user_id ve task_name zorunlu');
-
   const token = await getAccessToken();
   const userRootFolderId = await getUserDriveRootFolder(token, supabaseAdmin, user_id);
   const dateFolderId = await findOrCreateFolder(token, turkishDateFolder(), userRootFolderId);
-
   const ext = staging_path.split('.').pop()?.toLowerCase() ?? 'jpg';
   const filename = `${sanitizeFilename(task_name)}.${ext}`;
-  const mimeMap: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic' };
-  const mimeType = mimeMap[ext] ?? 'image/jpeg';
-
-  const driveFile = await uploadFromStorage(token, supabaseAdmin, staging_path, filename, mimeType, dateFolderId);
+  const driveFile = await uploadFromStorage(token, supabaseAdmin, staging_path, filename, guessMimeType(filename, false), dateFolderId);
   return { drive_file_id: driveFile.id, photo_url: driveImageUrl(driveFile.id) };
 }
 
-// ── ACTION: upload_photo (feed fotoğrafları) ──────────────────────────────────
-// Feed fotoğrafları → Diyar/Bahar root klasörüne direkt (alt klasör yok)
-async function handleUploadPhoto(
-  payload: { staging_path: string; user_id: string; filename?: string },
-  supabaseAdmin: ReturnType<typeof createClient>,
-) {
-  const { staging_path, user_id, filename } = payload;
+// ── ACTION: upload_photo (feed) → ROOT/Feed ───────────────────────────────────
+async function handleUploadPhoto(payload: any, supabaseAdmin: any) {
+  const { staging_path, user_id } = payload;
   if (!staging_path || !user_id) throw new Error('staging_path ve user_id zorunlu');
-
   const token = await getAccessToken();
-  const userRootFolderId = await getUserDriveRootFolder(token, supabaseAdmin, user_id);
-
-  const uploadedFilename = filename || `photo_${Date.now()}.jpg`;
-  const ext = uploadedFilename.split('.').pop()?.toLowerCase() ?? 'jpg';
-  const mimeMap: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic' };
-  const mimeType = mimeMap[ext] ?? 'image/jpeg';
-
-  const driveFile = await uploadFromStorage(token, supabaseAdmin, staging_path, uploadedFilename, mimeType, userRootFolderId);
+  const feedFolderId = await getFeedFolder(token);
+  const username = await getUsername(supabaseAdmin, user_id);
+  const ext = staging_path.split('.').pop()?.toLowerCase() ?? 'jpg';
+  const filename = feedFilename(username, undefined, ext);
+  const driveFile = await uploadFromStorage(token, supabaseAdmin, staging_path, filename, guessMimeType(filename, false), feedFolderId);
   return { drive_file_id: driveFile.id, photo_url: driveImageUrl(driveFile.id) };
 }
 
-// ── ACTION: upload_video ──────────────────────────────────────────────────────
-async function handleUploadVideo(
-  payload: { staging_path: string; user_id: string; filename?: string },
-  supabaseAdmin: ReturnType<typeof createClient>,
-) {
-  const { staging_path, user_id, filename } = payload;
+// ── ACTION: upload_video (feed) → ROOT/Feed ───────────────────────────────────
+async function handleUploadVideo(payload: any, supabaseAdmin: any) {
+  const { staging_path, user_id } = payload;
   if (!staging_path || !user_id) throw new Error('staging_path ve user_id zorunlu');
-
   const token = await getAccessToken();
-  const userRootFolderId = await getUserDriveRootFolder(token, supabaseAdmin, user_id);
-  const videosFolderId = await findOrCreateFolder(token, 'Videos', userRootFolderId);
-
-  const uploadedFilename = filename || `video_${Date.now()}.mp4`;
-  const ext = uploadedFilename.split('.').pop()?.toLowerCase() ?? 'mp4';
-  const mimeMap: Record<string, string> = { mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' };
-  const mimeType = mimeMap[ext] ?? 'video/mp4';
-
-  const driveFile = await uploadFromStorage(token, supabaseAdmin, staging_path, uploadedFilename, mimeType, videosFolderId);
+  const feedFolderId = await getFeedFolder(token);
+  const username = await getUsername(supabaseAdmin, user_id);
+  const ext = staging_path.split('.').pop()?.toLowerCase() ?? 'mp4';
+  const filename = feedFilename(username, undefined, ext);
+  const driveFile = await uploadFromStorage(token, supabaseAdmin, staging_path, filename, guessMimeType(filename, true), feedFolderId);
   return {
     drive_file_id: driveFile.id,
     drive_web_view_link: driveFile.webViewLink,
@@ -230,168 +270,239 @@ async function handleUploadVideo(
   };
 }
 
-// ── ACTION: migrate_task_photos ───────────────────────────────────────────────
-// Supabase Storage'daki task fotoğraflarını Diyar/Bahar tarih klasörlerine taşır
-// Timeout güvenliği için batch_size kadar işler, kalanı döner
-async function handleMigrateTaskPhotos(
-  supabaseAdmin: ReturnType<typeof createClient>,
-  batchSize = 5,
-) {
-  const token = await getAccessToken();
+// ── İç: Feed migrasyonu (TAŞIMA temelli, yeniden yükleme YOK) ──────────────────
+// 1) Storage URL'si olan feed postları → Feed klasörüne yükle
+// 2) Drive'da olan feed postları → Feed klasörüne TAŞI (aynı fileId), URL'yi lh3'e çevir
+async function processFeedMigration(supabaseAdmin: any, token: string, batchSize = 20) {
+  const feedFolderId = await getFeedFolder(token);
+  const { data: posts, error } = await supabaseAdmin
+    .from('social_feed')
+    .select('id, user_id, photo_url, photo_drive_file_id, video_drive_file_id, media_type')
+    .not('photo_url', 'is', null);
+  if (error) throw new Error(`Feed sorgu: ${error.message}`);
 
-  // Supabase Storage URL'si olan task fotoğraflarını çek
+  let moved = 0, uploaded = 0, fixed = 0;
+  const errors: string[] = [];
+
+  for (const post of (posts ?? []).slice(0, batchSize)) {
+    try {
+      const isVideo = post.media_type === 'video';
+      const url: string = post.photo_url;
+      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+?)(\?.*)?$/);
+
+      if (storageMatch) {
+        // Storage'da → Feed'e yükle
+        const [, bucket, path] = storageMatch;
+        const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(bucket).download(path);
+        if (dlErr || !blob) throw new Error(`Storage indirme: ${dlErr?.message}`);
+        const username = await getUsername(supabaseAdmin, post.user_id);
+        const ext = path.split('.').pop()?.toLowerCase() ?? (isVideo ? 'mp4' : 'jpg');
+        const filename = feedFilename(username, undefined, ext);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType: guessMimeType(path, isVideo), parents: [feedFolderId] });
+        await setPublicReadable(token, driveFile.id);
+        const payload: any = isVideo
+          ? { video_drive_file_id: driveFile.id, video_drive_url: driveVideoEmbedUrl(driveFile.id), photo_drive_file_id: driveFile.id }
+          : { photo_url: driveImageUrl(driveFile.id), photo_drive_file_id: driveFile.id };
+        await supabaseAdmin.from('social_feed').update(payload).eq('id', post.id);
+        uploaded++;
+      } else {
+        // Drive'da → Feed klasörüne taşı, URL'yi düzelt
+        const fileId = post.photo_drive_file_id || extractDriveId(url);
+        if (!fileId) throw new Error('file_id bulunamadı');
+        const didMove = await moveFile(token, fileId, feedFolderId);
+        if (didMove) moved++;
+        const correctUrl = isVideo ? driveVideoEmbedUrl(fileId) : driveImageUrl(fileId);
+        const needsFix = url !== correctUrl || post.photo_drive_file_id !== fileId;
+        if (needsFix) {
+          const payload: any = { photo_drive_file_id: fileId };
+          if (!isVideo) payload.photo_url = driveImageUrl(fileId);
+          await supabaseAdmin.from('social_feed').update(payload).eq('id', post.id);
+          fixed++;
+        }
+      }
+    } catch (err: any) {
+      errors.push(`Post ${post.id}: ${err?.message ?? err}`);
+    }
+  }
+  return { moved, uploaded, fixed, total: (posts ?? []).length, errors };
+}
+
+// ── İç: Task fotoğrafı migrasyonu (Storage → Diyar/Bahar/tarih) ────────────────
+async function processTaskMigration(supabaseAdmin: any, token: string, batchSize = 4) {
   const { data: allTasks, error } = await supabaseAdmin
     .from('tasks')
     .select('id, user_id, date, task_name, photo_url')
     .not('photo_url', 'is', null)
     .like('photo_url', 'https://%supabase.co%');
+  if (error) throw new Error(`Tasks sorgu: ${error.message}`);
+  const remaining = (allTasks ?? []).length;
+  if (remaining === 0) return { migrated: 0, remaining: 0, errors: [] };
 
-  if (error) throw new Error(`Tasks sorgu hatası: ${error.message}`);
-  const remaining = (allTasks || []).length;
-  if (remaining === 0) return { migrated: 0, remaining: 0, message: "Tüm task fotoğrafları zaten Drive'da" };
-
-  const tasks = allTasks.slice(0, batchSize);
   const folderCache: Record<string, string> = {};
-
-  async function getUserFolder(userId: string): Promise<string> {
-    if (folderCache[userId]) return folderCache[userId];
-    const folderId = await getUserDriveRootFolder(token, supabaseAdmin, userId);
-    folderCache[userId] = folderId;
-    return folderId;
+  async function userFolder(uid: string) {
+    if (!folderCache[uid]) folderCache[uid] = await getUserDriveRootFolder(token, supabaseAdmin, uid);
+    return folderCache[uid];
   }
 
   let migrated = 0;
   const errors: string[] = [];
-
-  for (const task of tasks) {
+  for (const task of allTasks.slice(0, batchSize)) {
     try {
-      const userFolderId = await getUserFolder(task.user_id);
-      const dateFolderId = await findOrCreateFolder(token, turkishDateFolder(task.date), userFolderId);
-
+      const dateFolderId = await findOrCreateFolder(token, turkishDateFolder(task.date), await userFolder(task.user_id));
       const url: string = task.photo_url;
-      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+?)(\?.*)?$/);
-      if (!storageMatch) throw new Error(`Storage path çıkarılamadı: ${url}`);
-      const [, bucket, path] = storageMatch;
-
+      const m = url.match(/\/object\/public\/([^/]+)\/(.+?)(\?.*)?$/);
+      if (!m) throw new Error(`Storage path çıkarılamadı: ${url}`);
+      const [, bucket, path] = m;
       const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(bucket).download(path);
       if (dlErr || !blob) throw new Error(`Storage indirme: ${dlErr?.message}`);
-
       const ext = path.split('.').pop()?.toLowerCase() ?? 'jpg';
       const filename = `${sanitizeFilename(task.task_name)}.${ext}`;
-      const mimeType = guessMimeType(path, false);
-
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType, parents: [dateFolderId] });
+      const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType: guessMimeType(path, false), parents: [dateFolderId] });
       await setPublicReadable(token, driveFile.id);
-
+      // NOT: Supabase Storage'daki orijinal silinmez (yedek/güvenlik) — sadece DB referansı güncellenir
       await supabaseAdmin.from('tasks').update({ photo_url: driveImageUrl(driveFile.id) }).eq('id', task.id);
       migrated++;
-    } catch (err: unknown) {
-      errors.push(`Task ${task.id} (${task.task_name}): ${err instanceof Error ? err.message : String(err)}`);
+    } catch (err: any) {
+      errors.push(`Task ${task.id} (${task.task_name}): ${err?.message ?? err}`);
     }
   }
-
   return { migrated, remaining: remaining - migrated, errors };
 }
 
-// ── ACTION: migrate_existing_posts ────────────────────────────────────────────
-// Feed postlarını Diyar/Bahar root klasörüne taşır.
-// İki grubu işler:
-//   1) Henüz hiç migrate edilmemiş (photo_drive_file_id NULL, storage URL)
-//   2) Yanlış yere migrate edilmiş (eski drive.google.com URL'leri → doğru yere taşı)
-async function handleMigrateExistingPosts(
-  supabaseAdmin: ReturnType<typeof createClient>,
-  batchSize = 5,
-) {
-  const token = await getAccessToken();
-  const folderCache: Record<string, string> = {};
-
-  async function getUserFolder(userId: string): Promise<string> {
-    if (folderCache[userId]) return folderCache[userId];
-    const folderId = await getUserDriveRootFolder(token, supabaseAdmin, userId);
-    folderCache[userId] = folderId;
-    return folderId;
+// ── İç: DB'de referans verilen tüm Drive file_id'leri topla ───────────────────
+async function collectReferencedIds(supabaseAdmin: any): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const { data: feed } = await supabaseAdmin
+    .from('social_feed')
+    .select('photo_url, photo_drive_file_id, video_drive_file_id, video_drive_url');
+  for (const r of feed ?? []) {
+    if (r.photo_drive_file_id) ids.add(r.photo_drive_file_id);
+    if (r.video_drive_file_id) ids.add(r.video_drive_file_id);
+    const a = extractDriveId(r.photo_url); if (a) ids.add(a);
+    const b = extractDriveId(r.video_drive_url); if (b) ids.add(b);
   }
-
-  // Grup 1: Hiç migrate edilmemiş (storage URL'si var)
-  const { data: unmigrated } = await supabaseAdmin
-    .from('social_feed')
-    .select('id, user_id, photo_url, media_type')
-    .not('photo_url', 'is', null)
-    .like('photo_url', 'https://%supabase.co%')
-    .limit(batchSize);
-
-  // Grup 2: Eski drive.google.com URL'si olan (yanlış klasörde)
-  const { data: wrongLocation } = await supabaseAdmin
-    .from('social_feed')
-    .select('id, user_id, photo_url, media_type')
-    .not('photo_url', 'is', null)
-    .like('photo_url', 'https://drive.google.com%')
-    .limit(batchSize - (unmigrated?.length ?? 0));
-
-  const posts = [...(unmigrated ?? []), ...(wrongLocation ?? [])].slice(0, batchSize);
-
-  // Toplam kalan sayısı
-  const { count: totalRemaining } = await supabaseAdmin
-    .from('social_feed')
-    .select('id', { count: 'exact', head: true })
-    .not('photo_url', 'is', null)
-    .not('photo_url', 'like', 'https://lh3.googleusercontent.com%');
-
-  if (posts.length === 0) return { migrated: 0, remaining: 0, message: 'Tüm postlar migrate edildi' };
-
-  let migrated = 0;
-  const errors: string[] = [];
-
-  for (const post of posts) {
-    try {
-      const isVideo = post.media_type === 'video';
-      const url: string = post.photo_url;
-      const userRootFolderId = await getUserFolder(post.user_id);
-      const targetFolderId = isVideo
-        ? await findOrCreateFolder(token, 'Videos', userRootFolderId)
-        : userRootFolderId;
-
-      const ext = url.split('?')[0].split('.').pop()?.toLowerCase() ?? (isVideo ? 'mp4' : 'jpg');
-      const filename = `${isVideo ? 'video' : 'photo'}_${post.id.slice(0, 8)}.${ext}`;
-      const mimeType = guessMimeType(url, isVideo);
-
-      let driveFileId: string;
-
-      // Storage URL → direkt indir
-      const storageMatch = url.match(/\/object\/public\/([^/]+)\/(.+?)(\?.*)?$/);
-      if (storageMatch) {
-        const [, bucket, path] = storageMatch;
-        const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(bucket).download(path);
-        if (dlErr || !blob) throw new Error(`Storage indirme: ${dlErr?.message}`);
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const driveFile = await uploadFileMultipart(token, bytes, { name: filename, mimeType, parents: [targetFolderId] });
-        await setPublicReadable(token, driveFile.id);
-        driveFileId = driveFile.id;
-      } else {
-        // Drive URL (yanlış konumda) → URL'den indir
-        const driveFile = await uploadFromUrl(token, url, filename, mimeType, targetFolderId);
-        driveFileId = driveFile.id;
-      }
-
-      const updatePayload: Record<string, unknown> = { photo_drive_file_id: driveFileId };
-      if (!isVideo) updatePayload.photo_url = driveImageUrl(driveFileId);
-      if (isVideo) {
-        updatePayload.video_drive_file_id = driveFileId;
-        updatePayload.video_drive_url = `https://drive.google.com/file/d/${driveFileId}/view`;
-      }
-
-      await supabaseAdmin.from('social_feed').update(updatePayload).eq('id', post.id);
-      migrated++;
-    } catch (err: unknown) {
-      errors.push(`Post ${post.id}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  const { data: tasks } = await supabaseAdmin.from('tasks').select('photo_url').not('photo_url', 'is', null);
+  for (const t of tasks ?? []) {
+    const a = extractDriveId(t.photo_url); if (a) ids.add(a);
   }
-
-  return { migrated, remaining: (totalRemaining ?? 0) - migrated, errors };
+  return ids;
 }
 
-// ── MAIN HANDLER ─────────────────────────────────────────────────────────────
+// ── İç: ROOT ağacını gez (klasör + dosyalar), derinlik sınırlı ─────────────────
+async function walkDriveTree(token: string, rootId: string, rootName: string) {
+  const files: any[] = [];   // tüm dosyalar (klasör değil)
+  const folders: any[] = []; // tüm klasörler
+  async function recurse(folderId: string, pathPrefix: string, depth: number) {
+    if (depth > 4) return;
+    const children = await listFolderChildren(token, folderId);
+    for (const c of children) {
+      const path = `${pathPrefix}/${c.name}`;
+      if (c.mimeType === FOLDER_MIME) {
+        folders.push({ id: c.id, path, parent: folderId });
+        await recurse(c.id, path, depth + 1);
+      } else {
+        files.push({ id: c.id, name: c.name, path, parent: folderId, size: c.size, mimeType: c.mimeType });
+      }
+    }
+  }
+  await recurse(rootId, rootName, 0);
+  return { files, folders };
+}
+
+// ── ACTION: admin_list_drive (SALT-OKUNUR) ────────────────────────────────────
+async function handleAdminListDrive(supabaseAdmin: any) {
+  const token = await getAccessToken();
+  const rootId = Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID')!;
+  const { files, folders } = await walkDriveTree(token, rootId, '75 Hard Challenge');
+  const referenced = await collectReferencedIds(supabaseAdmin);
+
+  const orphans = files.filter((f) => !referenced.has(f.id));
+  const referencedFiles = files.filter((f) => referenced.has(f.id));
+
+  // İçerik bazlı mükerrer tespiti (aynı isim + boyut)
+  const byKey: Record<string, any[]> = {};
+  for (const f of files) {
+    const key = `${f.name}|${f.size ?? '?'}`;
+    (byKey[key] ||= []).push(f);
+  }
+  const duplicateGroups = Object.entries(byKey)
+    .filter(([, arr]) => arr.length > 1)
+    .map(([key, arr]) => ({ key, count: arr.length, ids: arr.map((x) => ({ id: x.id, path: x.path, referenced: referenced.has(x.id) })) }));
+
+  return {
+    summary: {
+      total_files: files.length,
+      total_folders: folders.length,
+      referenced_in_db: referencedFiles.length,
+      orphans: orphans.length,
+      duplicate_groups: duplicateGroups.length,
+      db_referenced_ids: referenced.size,
+    },
+    folders: folders.map((f) => f.path),
+    orphans: orphans.map((f) => ({ id: f.id, path: f.path, size: f.size })),
+    duplicateGroups,
+  };
+}
+
+// ── ACTION: admin_migrate ─────────────────────────────────────────────────────
+async function handleAdminMigrate(supabaseAdmin: any, payload: any) {
+  const token = await getAccessToken();
+  const feed = await processFeedMigration(supabaseAdmin, token, payload.feed_batch ?? 20);
+  const tasks = await processTaskMigration(supabaseAdmin, token, payload.task_batch ?? 4);
+  return { feed, tasks, tasks_remaining: tasks.remaining };
+}
+
+// ── ACTION: admin_cleanup (dryRun varsayılan; çöp kutusuna, KALICI SİLME YOK) ──
+async function handleAdminCleanup(supabaseAdmin: any, payload: any) {
+  const token = await getAccessToken();
+  const rootId = Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID')!;
+  const feedFolderId = await getFeedFolder(token);
+  const diyarId = Deno.env.get('DRIVE_FOLDER_DIYAR')!;
+  const baharId = Deno.env.get('DRIVE_FOLDER_BAHAR')!;
+  const protectedFolders = new Set([rootId, feedFolderId, diyarId, baharId]);
+
+  const { files, folders } = await walkDriveTree(token, rootId, '75 Hard Challenge');
+  const referenced = await collectReferencedIds(supabaseAdmin);
+  const orphanFiles = files.filter((f) => !referenced.has(f.id));
+
+  // Legacy klasör adayları: ROOT'un doğrudan altındaki, korumalı olmayan klasörler.
+  // GÜVENLİK: içinde DB'de referanslı dosya varsa ASLA dokunulmaz.
+  const rootChildFolders = folders.filter((f) => f.parent === rootId && !protectedFolders.has(f.id));
+  const legacyFolders: any[] = [];
+  for (const folder of rootChildFolders) {
+    const inside = files.filter((f) => f.path.startsWith(folder.path + '/'));
+    const hasReferenced = inside.some((f) => referenced.has(f.id));
+    if (!hasReferenced) legacyFolders.push({ id: folder.id, path: folder.path });
+  }
+
+  const dryRun = payload.dry_run !== false; // varsayılan true
+  if (dryRun) {
+    return {
+      dry_run: true,
+      would_trash_files: orphanFiles.length,
+      files: orphanFiles.map((f) => ({ id: f.id, path: f.path, size: f.size })),
+      would_trash_folders: legacyFolders.length,
+      folders: legacyFolders.map((f) => f.path),
+    };
+  }
+
+  let trashedFiles = 0, trashedFolders = 0;
+  const errors: string[] = [];
+  for (const f of orphanFiles) {
+    try { await trashFile(token, f.id); trashedFiles++; }
+    catch (err: any) { errors.push(`file ${f.path}: ${err?.message ?? err}`); }
+  }
+  // Boşalan legacy klasörleri (alt klasörleriyle birlikte) çöpe taşı
+  for (const f of legacyFolders) {
+    try { await trashFile(token, f.id); trashedFolders++; }
+    catch (err: any) { errors.push(`folder ${f.path}: ${err?.message ?? err}`); }
+  }
+  return { dry_run: false, trashedFiles, trashedFolders, errors };
+}
+
+// ── MAIN ──────────────────────────────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -401,35 +512,31 @@ Deno.serve(async (req: Request) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) return new Response(JSON.stringify({ error: 'Yetkilendirme başlığı eksik' }), { status: 401, headers: jsonHeaders });
-
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
-    if (authError || !user) return new Response(JSON.stringify({ error: 'Geçersiz token' }), { status: 401, headers: jsonHeaders });
-
     const body = await req.json();
     const { action, ...payload } = body;
 
-    if (action === 'upload_task_photo') {
-      const result = await handleUploadTaskPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin);
-      return new Response(JSON.stringify(result), { headers: jsonHeaders });
+    // Admin aksiyonları: paylaşılan gizli anahtar ile (kullanıcı JWT'si gerekmez)
+    const ADMIN_SECRET = Deno.env.get('MIGRATION_ADMIN_SECRET');
+    const isAdminAction = action?.startsWith('admin_');
+    const isAdmin = ADMIN_SECRET && payload.admin_secret === ADMIN_SECRET;
+
+    if (isAdminAction) {
+      if (!isAdmin) return new Response(JSON.stringify({ error: 'admin yetkisi gerekli' }), { status: 401, headers: jsonHeaders });
+      if (action === 'admin_list_drive') return json(await handleAdminListDrive(supabaseAdmin));
+      if (action === 'admin_migrate') return json(await handleAdminMigrate(supabaseAdmin, payload));
+      if (action === 'admin_cleanup') return json(await handleAdminCleanup(supabaseAdmin, payload));
+      return new Response(JSON.stringify({ error: `Bilinmeyen admin action: ${action}` }), { status: 400, headers: jsonHeaders });
     }
-    if (action === 'upload_photo') {
-      const result = await handleUploadPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin);
-      return new Response(JSON.stringify(result), { headers: jsonHeaders });
-    }
-    if (action === 'upload_video') {
-      const result = await handleUploadVideo({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin);
-      return new Response(JSON.stringify(result), { headers: jsonHeaders });
-    }
-    if (action === 'migrate_task_photos') {
-      const result = await handleMigrateTaskPhotos(supabaseAdmin);
-      return new Response(JSON.stringify(result), { headers: jsonHeaders });
-    }
-    if (action === 'migrate_existing_posts') {
-      const result = await handleMigrateExistingPosts(supabaseAdmin);
-      return new Response(JSON.stringify(result), { headers: jsonHeaders });
-    }
+
+    // Normal aksiyonlar: kullanıcı JWT'si zorunlu
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) return new Response(JSON.stringify({ error: 'Yetkilendirme başlığı eksik' }), { status: 401, headers: jsonHeaders });
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
+    if (authError || !user) return new Response(JSON.stringify({ error: 'Geçersiz token' }), { status: 401, headers: jsonHeaders });
+
+    if (action === 'upload_task_photo') return json(await handleUploadTaskPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin));
+    if (action === 'upload_photo') return json(await handleUploadPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin));
+    if (action === 'upload_video') return json(await handleUploadVideo({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin));
 
     return new Response(JSON.stringify({ error: `Bilinmeyen action: ${action}` }), { status: 400, headers: jsonHeaders });
   } catch (err: unknown) {
@@ -437,3 +544,7 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: message }), { status: 500, headers: jsonHeaders });
   }
 });
+
+function json(data: unknown) {
+  return new Response(JSON.stringify(data), { headers: jsonHeaders });
+}

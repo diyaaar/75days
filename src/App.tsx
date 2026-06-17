@@ -989,7 +989,6 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const [newPostVideo, setNewPostVideo] = useState<File | null>(null);
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
   const [uploadingVideo, setUploadingVideo] = useState(false);
-  const [migrating, setMigrating] = useState(false);
   const [posting, setPosting] = useState(false);
   const [feedDialog, setFeedDialog] = useState<(DialogConfig & { onConfirm: () => void; onCancel: () => void }) | null>(null);
 
@@ -1118,37 +1117,6 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     if (!file) return;
     setNewPostVideo(file);
     setVideoPreview(URL.createObjectURL(file));
-  };
-
-  const handleMigrateExisting = async () => {
-    if (!await requestConfirm({
-      title: "Drive'a Taşı",
-      description: "Post ve task fotoğrafları Drive'a taşınacak. Timeout nedeniyle 5'er 5'er işlenir — tüm dosyalar taşınana kadar tekrar bas.",
-      confirmLabel: 'Taşı',
-    })) return;
-    setMigrating(true);
-    try {
-      const [{ data: postsResult, error: postsErr }, { data: tasksResult, error: tasksErr }] = await Promise.all([
-        supabase.functions.invoke('drive-manager', { body: { action: 'migrate_existing_posts' } }),
-        supabase.functions.invoke('drive-manager', { body: { action: 'migrate_task_photos' } }),
-      ]);
-      if (postsErr) throw postsErr;
-      if (tasksErr) throw tasksErr;
-
-      const thisBatch = (postsResult?.migrated ?? 0) + (tasksResult?.migrated ?? 0);
-      const remaining = (postsResult?.remaining ?? 0) + (tasksResult?.remaining ?? 0);
-
-      if (remaining > 0) {
-        toast(`${thisBatch} dosya taşındı — ${remaining} kaldı, tekrar bas 🔄`, { icon: '⏳', duration: 8000 });
-      } else {
-        toast.success(`Tümü Drive'a taşındı 🗂️`, { duration: 5000 });
-      }
-      fetchPosts();
-    } catch (err: any) {
-      toast.error(err.message);
-    } finally {
-      setMigrating(false);
-    }
   };
 
   const handlePost = async () => {
@@ -1291,17 +1259,6 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={handleMigrateExisting}
-            disabled={migrating}
-            className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors disabled:opacity-40"
-            title="Mevcut postları Drive'a taşı"
-          >
-            {migrating
-              ? <span className="w-4 h-4 border-2 border-primary-container border-t-transparent rounded-full animate-spin block" />
-              : <span className="material-symbols-outlined text-lg">cloud_upload</span>
-            }
-          </button>
-          <button
             onClick={() => setShowCompose(!showCompose)}
             className="icon-button w-10 h-10 bg-primary-container text-on-primary-container rounded-xl active:scale-95 transition-transform"
           >
@@ -1443,6 +1400,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
               <iframe
                 src={`https://drive.google.com/file/d/${post.video_drive_file_id}/preview`}
                 className="w-full h-full"
+                loading="lazy"
                 allow="autoplay"
                 allowFullScreen
               />
@@ -1452,8 +1410,15 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
               <video src={post.photo_url} controls className="w-full max-h-80 object-contain" />
             </div>
           ) : post.photo_url ? (
-            <div className="relative h-80 rounded-xl overflow-hidden">
-              <img src={post.photo_url} referrerPolicy="no-referrer" className="w-full h-full object-cover" alt="" />
+            <div className="relative h-80 rounded-xl overflow-hidden bg-surface-container">
+              <img
+                src={post.photo_url}
+                referrerPolicy="no-referrer"
+                loading="lazy"
+                decoding="async"
+                className="w-full h-full object-cover"
+                alt=""
+              />
             </div>
           ) : null}
           {post.content && <p className="text-on-surface-variant text-sm">{post.content}</p>}
