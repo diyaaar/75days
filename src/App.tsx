@@ -1446,7 +1446,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
             </div>
           ) : post.photo_url ? (
             <div className="relative h-80 rounded-xl overflow-hidden">
-              <img src={post.photo_url} className="w-full h-full object-cover" alt="" />
+              <img src={post.photo_url} referrerPolicy="no-referrer" className="w-full h-full object-cover" alt="" />
             </div>
           ) : null}
           {post.content && <p className="text-on-surface-variant text-sm">{post.content}</p>}
@@ -1852,6 +1852,7 @@ const User = ({
   onAddTask,
   onDeleteTask,
   onSaveReminder,
+  onUpdateTask,
 }: {
   profile: Profile;
   userTasks: UserTask[];
@@ -1860,6 +1861,7 @@ const User = ({
   onAddTask: (taskName: string, icon: string) => Promise<void>;
   onDeleteTask: (taskId: string) => Promise<void>;
   onSaveReminder: (taskId: string, time: string | null) => Promise<void>;
+  onUpdateTask: (taskId: string, updates: Partial<Pick<UserTask, 'task_name' | 'icon' | 'reminder_time'>>) => Promise<void>;
 }) => {
   const [editing, setEditing] = useState(false);
   const [editUsername, setEditUsername] = useState(profile.username || '');
@@ -1872,6 +1874,12 @@ const User = ({
   const [reminderTask, setReminderTask] = useState<UserTask | null>(null);
   const [reminderTime, setReminderTime] = useState('07:00');
   const [savingReminder, setSavingReminder] = useState(false);
+  const [editingTask, setEditingTask] = useState<UserTask | null>(null);
+  const [editTaskName, setEditTaskName] = useState('');
+  const [editTaskIcon, setEditTaskIcon] = useState(DEFAULT_NEW_TASK_ICON);
+  const [editReminderTime, setEditReminderTime] = useState('');
+  const [editReminderEnabled, setEditReminderEnabled] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [userDialog, setUserDialog] = useState<(DialogConfig & { onConfirm: () => void; onCancel: () => void }) | null>(null);
 
   const requestConfirm = useCallback((config: DialogConfig): Promise<boolean> => {
@@ -1923,6 +1931,33 @@ const User = ({
     }
   };
 
+  const openEditModal = (task: UserTask) => {
+    setEditTaskName(task.task_name);
+    setEditTaskIcon(task.icon);
+    setEditReminderEnabled(!!task.reminder_time);
+    setEditReminderTime(task.reminder_time || '07:00');
+    setEditingTask(task);
+  };
+
+  const handleSaveTaskEdit = async () => {
+    if (!editingTask || !editTaskName.trim()) return;
+    setSavingEdit(true);
+    try {
+      const updates: Partial<Pick<UserTask, 'task_name' | 'icon' | 'reminder_time'>> = {
+        task_name: editTaskName.trim().toUpperCase(),
+        icon: editTaskIcon,
+        reminder_time: editReminderEnabled ? editReminderTime : null,
+      };
+      await onUpdateTask(editingTask.id, updates);
+      toast.success('Task güncellendi');
+      setEditingTask(null);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const handleDeleteTask = async (taskId: string, taskName: string) => {
     if (!await requestConfirm({ title: `"${taskName}" Silinecek`, description: 'Bu task\'i silmek istiyor musun?', destructive: true, confirmLabel: 'Sil' })) return;
     try {
@@ -1933,38 +1968,6 @@ const User = ({
     }
   };
 
-  const openReminderModal = (task: UserTask) => {
-    setReminderTime(task.reminder_time || '07:00');
-    setReminderTask(task);
-  };
-
-  const handleSaveReminder = async (time: string) => {
-    if (!reminderTask) return;
-    setSavingReminder(true);
-    try {
-      await onSaveReminder(reminderTask.id, time);
-      toast.success('Hatırlatıcı kaydedildi 🔔');
-      setReminderTask(null);
-    } catch (e: any) {
-      toast.error(e.message);
-    } finally {
-      setSavingReminder(false);
-    }
-  };
-
-  const handleRemoveReminder = async () => {
-    if (!reminderTask) return;
-    setSavingReminder(true);
-    try {
-      await onSaveReminder(reminderTask.id, null);
-      toast.success('Hatırlatıcı kaldırıldı');
-      setReminderTask(null);
-    } catch (e: any) {
-      toast.error(e.message);
-    } finally {
-      setSavingReminder(false);
-    }
-  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
@@ -2142,72 +2145,132 @@ const User = ({
 
         <div className="space-y-2">
           {userTasks.map((task) => (
-            <div key={task.id} className="flex items-center justify-between bg-surface-container-low p-4 rounded-xl">
-              <div className="flex items-center gap-3">
-                <div className="text-primary-container">
-                  {(TASK_ICON_MAP[task.icon] && React.createElement(TASK_ICON_MAP[task.icon], { className: 'w-5 h-5' })) || <CheckCircle className="w-5 h-5" />}
+            <div key={task.id} className="bg-surface-container-low rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between p-4">
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <div className="text-primary-container shrink-0">
+                    {(TASK_ICON_MAP[task.icon] && React.createElement(TASK_ICON_MAP[task.icon], { className: 'w-5 h-5' })) || <CheckCircle className="w-5 h-5" />}
+                  </div>
+                  <div className="min-w-0">
+                    <span className="font-headline font-bold text-sm uppercase block truncate">{task.task_name}</span>
+                    {task.reminder_time && (
+                      <p className="font-label text-[10px] text-yellow-400 tracking-wider mt-0.5">🔔 {task.reminder_time}</p>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <span className="font-headline font-bold text-sm uppercase">{task.task_name}</span>
-                  {task.reminder_time && (
-                    <p className="font-label text-[10px] text-yellow-400 tracking-wider mt-0.5">🔔 {task.reminder_time}</p>
-                  )}
+                <div className="flex items-center gap-1 shrink-0 ml-2">
+                  <button
+                    onClick={() => openEditModal(task)}
+                    className="icon-button w-8 h-8 rounded-lg text-on-surface-variant hover:text-primary-container transition-colors"
+                    title="Düzenle"
+                  >
+                    <Edit className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="icon-button w-8 h-8 rounded-lg text-on-surface-variant hover:text-error transition-colors">
+                    <Delete className="w-4 h-4" />
+                  </button>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => openReminderModal(task)}
-                  className={cn('icon-button w-7 h-7 rounded-lg transition-colors', task.reminder_time ? 'text-yellow-400' : 'text-on-surface-variant/40 hover:text-on-surface-variant')}
-                  title="Hatırlatıcı ayarla"
-                >
-                  <span className="material-symbols-outlined text-base">notifications</span>
-                </button>
-                <button onClick={() => handleDeleteTask(task.id, task.task_name)} className="icon-button w-6 h-6 text-on-surface-variant hover:text-error transition-colors">
-                  <Delete className="w-5 h-5" />
-                </button>
               </div>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Reminder Modal */}
+      {/* Task Düzenleme Modal */}
       <AnimatePresence>
-        {reminderTask && (
+        {editingTask && (
           <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 z-50 backdrop-blur-sm" onClick={() => setReminderTask(null)} />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/70 z-50 backdrop-blur-sm" onClick={() => setEditingTask(null)} />
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 20 }}
-              className="fixed bottom-0 left-0 right-0 z-[55] bg-surface-container rounded-t-3xl p-6 space-y-5 max-w-md mx-auto"
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 240 }}
+              className="fixed bottom-0 left-0 right-0 z-[55] bg-surface-container rounded-t-3xl max-h-[90vh] overflow-y-auto max-w-md mx-auto"
             >
-              <div className="w-10 h-1 bg-on-surface-variant/20 rounded-full mx-auto" />
-              <div>
-                <h3 className="font-headline font-bold text-xl uppercase tracking-tight">Hatırlatıcı</h3>
-                <p className="font-label text-[10px] text-primary-container tracking-widest uppercase mt-1">{reminderTask.task_name}</p>
-              </div>
-              <div className="bg-surface-container-high rounded-2xl p-4 flex items-center gap-4">
-                <span className="text-2xl">🔔</span>
-                <div className="flex-1">
-                  <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase mb-1">Her gün saat</p>
+              <div className="p-6 space-y-5">
+                <div className="w-10 h-1 bg-on-surface-variant/20 rounded-full mx-auto" />
+                <div className="flex items-center justify-between">
+                  <h3 className="font-headline font-bold text-xl uppercase tracking-tight">Task Düzenle</h3>
+                  <button onClick={() => setEditingTask(null)} className="text-on-surface-variant">
+                    <Close className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* İsim */}
+                <div className="space-y-1">
+                  <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">Task Adı</p>
                   <input
-                    type="time"
-                    value={reminderTime}
-                    onChange={(e) => setReminderTime(e.target.value)}
-                    className="bg-transparent font-headline font-bold text-2xl text-on-surface outline-none w-full"
+                    className="w-full bg-surface-container-high px-4 py-3 rounded-xl outline-none text-on-surface font-headline font-bold text-sm uppercase focus:ring-2 ring-primary-container/40"
+                    value={editTaskName}
+                    onChange={(e) => setEditTaskName(e.target.value)}
+                    placeholder="Task adı..."
                   />
                 </div>
-              </div>
-              <div className="flex gap-3">
-                {reminderTask.reminder_time && (
-                  <button onClick={handleRemoveReminder} disabled={savingReminder} className="flex-1 py-3 rounded-xl bg-surface-container-high text-on-surface-variant font-bold text-sm uppercase tracking-wider disabled:opacity-40 active:scale-95 transition-transform">
-                    Kaldır
+
+                {/* İkon seçici */}
+                <div className="space-y-2">
+                  <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">İkon</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {TASK_ICON_OPTIONS.map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setEditTaskIcon(option.key)}
+                        className={cn(
+                          'rounded-xl p-3 border transition-all active:scale-95 flex flex-col items-center gap-1.5',
+                          editTaskIcon === option.key
+                            ? 'bg-primary-container text-on-primary-container border-primary-container'
+                            : 'bg-surface-container text-on-surface-variant border-transparent hover:text-primary-container'
+                        )}
+                      >
+                        <option.Icon className="w-5 h-5" />
+                        <span className="font-label text-[8px] tracking-widest uppercase text-center leading-tight">{option.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Hatırlatıcı */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase">Günlük Hatırlatıcı</p>
+                    <button
+                      onClick={() => setEditReminderEnabled(!editReminderEnabled)}
+                      className={cn('w-11 h-6 rounded-full transition-colors relative', editReminderEnabled ? 'bg-primary-container' : 'bg-surface-container-highest')}
+                    >
+                      <span className={cn('absolute top-1 w-4 h-4 rounded-full bg-white transition-all', editReminderEnabled ? 'left-6' : 'left-1')} />
+                    </button>
+                  </div>
+                  {editReminderEnabled && (
+                    <div className="bg-surface-container-high rounded-2xl p-4 flex items-center gap-4">
+                      <span className="text-xl">🔔</span>
+                      <div className="flex-1">
+                        <p className="font-label text-[10px] text-on-surface-variant tracking-widest uppercase mb-1">Her gün saat</p>
+                        <input
+                          type="time"
+                          value={editReminderTime}
+                          onChange={(e) => setEditReminderTime(e.target.value)}
+                          className="bg-transparent font-headline font-bold text-2xl text-on-surface outline-none w-full"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Butonlar */}
+                <div className="flex gap-3 pb-2">
+                  <button onClick={() => setEditingTask(null)} className="flex-1 py-3 rounded-xl bg-surface-container-high font-bold text-sm uppercase tracking-wider active:scale-95 transition-transform">
+                    İptal
                   </button>
-                )}
-                <button onClick={() => handleSaveReminder(reminderTime)} disabled={savingReminder} className="flex-1 py-3 rounded-xl bg-primary-container text-on-primary-container font-bold text-sm uppercase tracking-wider disabled:opacity-40 active:scale-95 transition-transform">
-                  {savingReminder ? '...' : 'Kaydet'}
-                </button>
+                  <button
+                    onClick={handleSaveTaskEdit}
+                    disabled={savingEdit || !editTaskName.trim()}
+                    className="flex-1 py-3 rounded-xl bg-primary-container text-on-primary-container font-bold text-sm uppercase tracking-wider disabled:opacity-40 active:scale-95 transition-transform"
+                  >
+                    {savingEdit ? '...' : 'Kaydet'}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </>
@@ -2453,6 +2516,12 @@ export default function App() {
     const { error } = await supabase.from('user_tasks').update({ reminder_time: time }).eq('id', taskId);
     if (error) throw error;
     setUserTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, reminder_time: time } : t));
+  };
+
+  const updateUserTask = async (taskId: string, updates: Partial<Pick<UserTask, 'task_name' | 'icon' | 'reminder_time'>>) => {
+    const { error } = await supabase.from('user_tasks').update(updates).eq('id', taskId).eq('user_id', session.user.id);
+    if (error) throw error;
+    setUserTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, ...updates } : t));
   };
 
   // ---- DAILY TASKS ----
@@ -2704,6 +2773,7 @@ export default function App() {
                 onAddTask={addUserTask}
                 onDeleteTask={deleteUserTask}
                 onSaveReminder={saveReminder}
+                onUpdateTask={updateUserTask}
               />
             </React.Fragment>
           )}
