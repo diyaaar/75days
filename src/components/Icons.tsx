@@ -55,3 +55,6 @@ export const Spa = (p: IconProps) => <Icon name="spa" {...p} />;
 export const TaskAlt = (p: IconProps) => <Icon name="task_alt" {...p} />;
 export const CenterFocusStrong = (p: IconProps) => <Icon name="center_focus_strong" {...p} />;
 export const HelpOutline = (p: IconProps) => <Icon name="help_outline" {...p} />;
+export const Videocam = (p: IconProps) => <Icon name="videocam" {...p} />;
+export const Stop = (p: IconProps) => <Icon name="stop" {...p} />;
+export const PlayCircle = (p: IconProps) => <Icon name="play_circle" {...p} />;

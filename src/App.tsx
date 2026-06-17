@@ -39,6 +39,8 @@ import {
   MonitorHeart,
   Hiking,
   HelpOutline,
+  Videocam,
+  Stop,
 } from './components/Icons';
 import { Toaster, toast } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'motion/react';
@@ -95,6 +97,9 @@ interface FeedItem {
   content: string;
   type: string;
   photo_url: string;
+  video_drive_file_id: string | null;
+  video_drive_url: string | null;
+  media_type: 'none' | 'image' | 'video';
   created_at: string;
   profiles: Profile;
   like_count: number;
@@ -168,24 +173,13 @@ const Auth = () => {
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [isSignUp, setIsSignUp] = useState(false);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { emailRedirectTo: window.location.origin },
-        });
-        if (error) throw error;
-        toast.success('Check your email for confirmation!');
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-      }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
     } catch (error: any) {
       toast.error(error.message);
     } finally {
@@ -222,15 +216,9 @@ const Auth = () => {
             disabled={loading}
             className="w-full bg-primary-container text-on-primary-container font-headline font-bold py-4 rounded-xl active:scale-95 transition-transform disabled:opacity-50"
           >
-            {loading ? 'Processing...' : isSignUp ? 'Create Account' : 'Sign In'}
+            {loading ? 'Processing...' : 'Sign In'}
           </button>
         </form>
-        <button
-          onClick={() => setIsSignUp(!isSignUp)}
-          className="w-full text-on-surface-variant text-sm uppercase tracking-widest"
-        >
-          {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
-        </button>
       </div>
     </div>
   );
@@ -953,10 +941,19 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const [newPostContent, setNewPostContent] = useState('');
   const [newPostPhoto, setNewPostPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [newPostVideo, setNewPostVideo] = useState<Blob | null>(null);
+  const [videoPreview, setVideoPreview] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
   const [posting, setPosting] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
 
   const fetchPosts = useCallback(async () => {
     const { data: friendsData } = await supabase
@@ -1041,11 +1038,71 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     }
   };
 
+  const clearPhoto = () => {
+    if (!confirm('Fotoğrafı kaldırmak istiyor musun?')) return;
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+    setNewPostPhoto(null);
+    setPhotoPreview(null);
+  };
+
+  const clearVideo = () => {
+    if (!confirm('Videoyu kaldırmak istiyor musun?')) return;
+    if (videoPreview) URL.revokeObjectURL(videoPreview);
+    if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    setNewPostVideo(null);
+    setVideoPreview(null);
+  };
+
+  const startRecording = async () => {
+    if (newPostPhoto) {
+      toast.error('Fotoğraf varken video ekleyemezsin');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      streamRef.current = stream;
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+        ? 'video/webm;codecs=vp9,opus'
+        : 'video/webm';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      chunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        setNewPostVideo(blob);
+        setVideoPreview(URL.createObjectURL(blob));
+        stream.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      };
+      recorder.start(100);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => setRecordingSeconds(s => s + 1), 1000);
+    } catch {
+      toast.error('Kamera erişimi reddedildi');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    setIsRecording(false);
+    setRecordingSeconds(0);
+  };
+
   const handlePost = async () => {
-    if (!newPostContent.trim() && !newPostPhoto) return;
+    if (!newPostContent.trim() && !newPostPhoto && !newPostVideo) return;
     setPosting(true);
     try {
-      let photoUrl = null;
+      let photoUrl: string | null = null;
+      let videoDriveFileId: string | null = null;
+      let videoDriveUrl: string | null = null;
+      let mediaType: 'none' | 'image' | 'video' = 'none';
+
       if (newPostPhoto) {
         const ext = newPostPhoto.name.split('.').pop();
         const path = `${session.user.id}/${Date.now()}.${ext}`;
@@ -1053,6 +1110,33 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         if (uploadError) throw uploadError;
         const { data: urlData } = supabase.storage.from('task_photos').getPublicUrl(path);
         photoUrl = urlData.publicUrl;
+        mediaType = 'image';
+      }
+
+      if (newPostVideo) {
+        setUploadingVideo(true);
+        const stagingPath = `${session.user.id}/video_${Date.now()}.webm`;
+        const { error: stagingError } = await supabase.storage
+          .from('task_photos')
+          .upload(stagingPath, newPostVideo, { contentType: 'video/webm' });
+        if (stagingError) throw stagingError;
+
+        const { data: driveResult, error: driveError } = await supabase.functions.invoke('drive-manager', {
+          body: { action: 'upload_video', staging_path: stagingPath, user_id: session.user.id },
+        });
+
+        if (driveError || !driveResult?.drive_file_id) {
+          // Fallback: Drive çalışmazsa Supabase Storage URL kullan
+          const { data: fbUrl } = supabase.storage.from('task_photos').getPublicUrl(stagingPath);
+          photoUrl = fbUrl.publicUrl;
+          mediaType = 'video';
+          toast('Video Drive\'a yüklenemedi, yerel depolama kullanıldı', { icon: '⚠️' });
+        } else {
+          videoDriveFileId = driveResult.drive_file_id;
+          videoDriveUrl = driveResult.drive_web_view_link;
+          mediaType = 'video';
+        }
+        setUploadingVideo(false);
       }
 
       const { data: insertedPost, error } = await supabase.from('social_feed').insert({
@@ -1060,27 +1144,34 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         content: newPostContent,
         type: 'manual_post',
         photo_url: photoUrl,
+        video_drive_file_id: videoDriveFileId,
+        video_drive_url: videoDriveUrl,
+        media_type: mediaType,
       }).select().single();
       if (error) throw error;
-      
-      // Trigger push notification
+
       await supabase.functions.invoke('send-push-notification', {
         body: {
           post_id: insertedPost.id,
           user_id: session.user.id,
           poster_name: profile?.username,
-          content: newPostContent
-        }
+          content: newPostContent,
+        },
       });
 
-
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+      if (videoPreview) URL.revokeObjectURL(videoPreview);
       setNewPostContent('');
       setNewPostPhoto(null);
       setPhotoPreview(null);
+      setNewPostVideo(null);
+      setVideoPreview(null);
       setShowCompose(false);
       toast.success('Posted!', { icon: '📝' });
     } catch (error: any) {
-      toast.error(error.message);
+      setUploadingVideo(false);
+      toast.error(error.message, { duration: 6000 });
+      // state'i temizleme — kullanıcı tekrar deneyebilsin
     } finally {
       setPosting(false);
     }
@@ -1099,6 +1190,14 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
       <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handlePhotoSelect} />
       <input type="file" ref={galleryInputRef} accept="image/*" className="hidden" onChange={handlePhotoSelect} />
+      {/* Video kayıt sırasında kırmızı pulsing gösterge */}
+      {isRecording && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/80 text-white px-4 py-2 rounded-full">
+          <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+          <span className="font-mono font-bold">{recordingSeconds}s</span>
+          <span className="text-xs text-white/70">Kaydediliyor...</span>
+        </div>
+      )}
 
       <div className="flex justify-between items-end">
         <div className="space-y-1">
@@ -1133,25 +1232,62 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                 <div className="relative w-full h-40 rounded-xl overflow-hidden">
                   <img src={photoPreview} className="w-full h-full object-cover" alt="preview" />
                   <button
-                    onClick={() => { setNewPostPhoto(null); setPhotoPreview(null); }}
+                    onClick={clearPhoto}
                     className="absolute top-2 right-2 icon-button w-6 h-6 bg-black/60 rounded-full"
                   >
                     <Close className="w-4 h-4 text-white" />
                   </button>
                 </div>
               )}
+              {videoPreview && (
+                <div className="relative w-full rounded-xl overflow-hidden bg-black">
+                  <video src={videoPreview} controls className="w-full max-h-60 object-contain" />
+                  <button
+                    onClick={clearVideo}
+                    className="absolute top-2 right-2 icon-button w-6 h-6 bg-black/60 rounded-full"
+                  >
+                    <Close className="w-4 h-4 text-white" />
+                  </button>
+                </div>
+              )}
+              {uploadingVideo && (
+                <div className="flex items-center gap-2 text-on-surface-variant text-xs">
+                  <span className="w-3 h-3 border-2 border-primary-container border-t-transparent rounded-full animate-spin" />
+                  Video Drive'a yükleniyor...
+                </div>
+              )}
               <div className="flex justify-between items-center">
                 <div className="flex gap-2">
-                  <button onClick={() => cameraInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Take photo">
-                    <PhotoCamera className="w-5 h-5" />
-                  </button>
-                  <button onClick={() => galleryInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Choose from gallery">
-                    <Image className="w-5 h-5" />
-                  </button>
+                  {!newPostVideo && (
+                    <>
+                      <button onClick={() => cameraInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Take photo">
+                        <PhotoCamera className="w-5 h-5" />
+                      </button>
+                      <button onClick={() => galleryInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Choose from gallery">
+                        <Image className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+                  {!newPostPhoto && (
+                    <button
+                      onPointerDown={startRecording}
+                      onPointerUp={stopRecording}
+                      onPointerLeave={stopRecording}
+                      className={cn(
+                        'icon-button w-8 h-8 transition-all select-none touch-none',
+                        isRecording
+                          ? 'text-red-500 scale-125'
+                          : 'text-on-surface-variant hover:text-primary-container'
+                      )}
+                      title="Basılı tut: video kaydet"
+                    >
+                      {isRecording ? <Stop className="w-5 h-5" /> : <Videocam className="w-5 h-5" />}
+                    </button>
+                  )}
                 </div>
                 <button
                   onClick={handlePost}
-                  disabled={posting || (!newPostContent.trim() && !newPostPhoto)}
+                  disabled={posting || uploadingVideo || (!newPostContent.trim() && !newPostPhoto && !newPostVideo)}
                   className="bg-primary-container text-on-primary-container px-5 py-2 rounded-xl font-bold text-sm uppercase tracking-wider flex items-center gap-2 disabled:opacity-40 active:scale-95 transition-transform"
                 >
                   <Send className="w-4 h-4" />
@@ -1199,11 +1335,24 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
               )}
             </div>
           </div>
-          {post.photo_url && (
+          {post.media_type === 'video' && post.video_drive_file_id ? (
+            <div className="relative rounded-xl overflow-hidden bg-black aspect-video">
+              <iframe
+                src={`https://drive.google.com/file/d/${post.video_drive_file_id}/preview`}
+                className="w-full h-full"
+                allow="autoplay"
+                allowFullScreen
+              />
+            </div>
+          ) : post.media_type === 'video' && post.photo_url ? (
+            <div className="relative rounded-xl overflow-hidden bg-black">
+              <video src={post.photo_url} controls className="w-full max-h-80 object-contain" />
+            </div>
+          ) : post.photo_url ? (
             <div className="relative h-80 rounded-xl overflow-hidden">
               <img src={post.photo_url} className="w-full h-full object-cover" alt="" />
             </div>
-          )}
+          ) : null}
           {post.content && <p className="text-on-surface-variant text-sm">{post.content}</p>}
           <div className="flex items-center gap-6 pt-2">
             <button onClick={() => handleLike(post.id, post.liked_by_me)} className="flex items-center gap-2 group active:scale-90 transition-transform">
