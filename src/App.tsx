@@ -97,6 +97,7 @@ interface FeedItem {
   content: string;
   type: string;
   photo_url: string;
+  photo_drive_file_id: string | null;
   video_drive_file_id: string | null;
   video_drive_url: string | null;
   media_type: 'none' | 'image' | 'video';
@@ -941,21 +942,15 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const [newPostContent, setNewPostContent] = useState('');
   const [newPostPhoto, setNewPostPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
-  const [newPostVideo, setNewPostVideo] = useState<Blob | null>(null);
+  const [newPostVideo, setNewPostVideo] = useState<File | null>(null);
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [uploadingVideo, setUploadingVideo] = useState(false);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  const [migrating, setMigrating] = useState(false);
   const [posting, setPosting] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const liveVideoRef = useRef<HTMLVideoElement>(null);
-  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
+  const videoInputRef = useRef<HTMLInputElement>(null);
 
   const fetchPosts = useCallback(async () => {
     const { data: friendsData } = await supabase
@@ -1058,64 +1053,32 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
   const clearVideo = () => {
     if (!confirm('Videoyu kaldırmak istiyor musun?')) return;
     if (videoPreview) URL.revokeObjectURL(videoPreview);
-    if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     setNewPostVideo(null);
     setVideoPreview(null);
+    if (videoInputRef.current) videoInputRef.current.value = '';
   };
 
-  const startRecording = async () => {
-    if (isRecording) return; // çift başlatmayı engelle
-    if (newPostPhoto) { toast.error('Fotoğraf varken video ekleyemezsin'); return; }
+  const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNewPostVideo(file);
+    setVideoPreview(URL.createObjectURL(file));
+  };
+
+  const handleMigrateExisting = async () => {
+    if (!confirm('Mevcut tüm post fotoğrafları ve videoları Drive\'a taşınacak. Devam?')) return;
+    setMigrating(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode },
-        audio: true,
+      const { data, error } = await supabase.functions.invoke('drive-manager', {
+        body: { action: 'migrate_existing_posts' },
       });
-      streamRef.current = stream;
-      if (liveVideoRef.current) {
-        liveVideoRef.current.srcObject = stream;
-        liveVideoRef.current.play().catch(() => {});
-      }
-      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-        ? 'video/webm;codecs=vp9,opus'
-        : 'video/webm';
-      const recorder = new MediaRecorder(stream, { mimeType });
-      chunksRef.current = [];
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-        setNewPostVideo(blob);
-        setVideoPreview(URL.createObjectURL(blob));
-        stream.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-        if (liveVideoRef.current) liveVideoRef.current.srcObject = null;
-      };
-      recorder.start(100);
-      mediaRecorderRef.current = recorder;
-      setIsRecording(true);
-      setRecordingSeconds(0);
-      recordingTimerRef.current = setInterval(() => setRecordingSeconds(s => s + 1), 1000);
-    } catch {
-      toast.error('Kamera erişimi reddedildi');
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current?.state !== 'recording') return;
-    mediaRecorderRef.current.stop();
-    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-    setIsRecording(false);
-    setRecordingSeconds(0);
-  };
-
-  const flipCamera = async () => {
-    const next = facingMode === 'environment' ? 'user' : 'environment';
-    setFacingMode(next);
-    if (isRecording) {
-      stopRecording();
-      // kısa gecikme sonra yeni kamerayla yeniden başlat
-      setTimeout(() => { setFacingMode(next); }, 100);
+      if (error) throw error;
+      toast.success(`${data.migrated} post Drive'a taşındı`, { duration: 5000 });
+      fetchPosts();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setMigrating(false);
     }
   };
 
@@ -1124,43 +1087,55 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     setPosting(true);
     try {
       let photoUrl: string | null = null;
+      let photoDriveFileId: string | null = null;
       let videoDriveFileId: string | null = null;
       let videoDriveUrl: string | null = null;
       let mediaType: 'none' | 'image' | 'video' = 'none';
 
       if (newPostPhoto) {
-        const ext = newPostPhoto.name.split('.').pop();
-        const path = `${session.user.id}/${Date.now()}.${ext}`;
-        const { error: uploadError } = await supabase.storage.from('task_photos').upload(path, newPostPhoto);
+        const ext = newPostPhoto.name.split('.').pop() ?? 'jpg';
+        const stagingPath = `${session.user.id}/${Date.now()}.${ext}`;
+        const { error: uploadError } = await supabase.storage.from('task_photos').upload(stagingPath, newPostPhoto);
         if (uploadError) throw uploadError;
-        const { data: urlData } = supabase.storage.from('task_photos').getPublicUrl(path);
-        photoUrl = urlData.publicUrl;
+
+        const { data: driveResult, error: driveError } = await supabase.functions.invoke('drive-manager', {
+          body: { action: 'upload_photo', staging_path: stagingPath, user_id: session.user.id, filename: newPostPhoto.name },
+        });
+
+        if (driveError || !driveResult?.photo_url) {
+          // Fallback: Drive çalışmazsa Storage URL kullan
+          const { data: fbUrl } = supabase.storage.from('task_photos').getPublicUrl(stagingPath);
+          photoUrl = fbUrl.publicUrl;
+          toast('Fotoğraf Drive\'a yüklenemedi, yerel depolama kullanıldı', { icon: '⚠️' });
+        } else {
+          photoUrl = driveResult.photo_url;
+          photoDriveFileId = driveResult.drive_file_id;
+        }
         mediaType = 'image';
       }
 
       if (newPostVideo) {
         setUploadingVideo(true);
-        const stagingPath = `${session.user.id}/video_${Date.now()}.webm`;
+        const ext = newPostVideo.name.split('.').pop() ?? 'mp4';
+        const stagingPath = `${session.user.id}/video_${Date.now()}.${ext}`;
         const { error: stagingError } = await supabase.storage
           .from('task_photos')
-          .upload(stagingPath, newPostVideo, { contentType: 'video/webm' });
+          .upload(stagingPath, newPostVideo, { contentType: newPostVideo.type || 'video/mp4' });
         if (stagingError) throw stagingError;
 
         const { data: driveResult, error: driveError } = await supabase.functions.invoke('drive-manager', {
-          body: { action: 'upload_video', staging_path: stagingPath, user_id: session.user.id },
+          body: { action: 'upload_video', staging_path: stagingPath, user_id: session.user.id, filename: newPostVideo.name },
         });
 
         if (driveError || !driveResult?.drive_file_id) {
-          // Fallback: Drive çalışmazsa Supabase Storage URL kullan
           const { data: fbUrl } = supabase.storage.from('task_photos').getPublicUrl(stagingPath);
           photoUrl = fbUrl.publicUrl;
-          mediaType = 'video';
           toast('Video Drive\'a yüklenemedi, yerel depolama kullanıldı', { icon: '⚠️' });
         } else {
           videoDriveFileId = driveResult.drive_file_id;
           videoDriveUrl = driveResult.drive_web_view_link;
-          mediaType = 'video';
         }
+        mediaType = 'video';
         setUploadingVideo(false);
       }
 
@@ -1172,6 +1147,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         content: newPostContent,
         type: 'manual_post',
         photo_url: photoUrl,
+        photo_drive_file_id: photoDriveFileId,
         video_drive_file_id: videoDriveFileId,
         video_drive_url: videoDriveUrl,
         media_type: mediaType,
@@ -1186,6 +1162,7 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         content: newPostContent,
         type: 'manual_post',
         photo_url: photoUrl,
+        photo_drive_file_id: photoDriveFileId,
         video_drive_file_id: videoDriveFileId,
         video_drive_url: videoDriveUrl,
         media_type: mediaType,
@@ -1235,52 +1212,32 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
       <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" className="hidden" onChange={handlePhotoSelect} />
       <input type="file" ref={galleryInputRef} accept="image/*" className="hidden" onChange={handlePhotoSelect} />
-      {/* Canlı kamera preview — kayıt sırasında */}
-      {isRecording && (
-        <div className="fixed inset-0 z-40 bg-black flex flex-col">
-          <video
-            ref={liveVideoRef}
-            muted
-            playsInline
-            className="flex-1 w-full object-cover"
-            style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
-          />
-          {/* Üst bar */}
-          <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4 bg-gradient-to-b from-black/60 to-transparent">
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-              <span className="font-mono font-bold text-white text-lg">{recordingSeconds}s</span>
-            </div>
-            <button
-              onClick={flipCamera}
-              className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white"
-            >
-              <span className="material-symbols-outlined text-xl">flip_camera_ios</span>
-            </button>
-          </div>
-          {/* Stop butonu */}
-          <div className="absolute bottom-10 left-0 right-0 flex justify-center">
-            <button
-              onClick={stopRecording}
-              className="w-20 h-20 rounded-full bg-red-500 flex items-center justify-center shadow-2xl active:scale-90 transition-transform"
-            >
-              <span className="w-8 h-8 bg-white rounded-sm" />
-            </button>
-          </div>
-        </div>
-      )}
+      <input type="file" ref={videoInputRef} accept="video/*" capture="environment" className="hidden" onChange={handleVideoSelect} />
 
       <div className="flex justify-between items-end">
         <div className="space-y-1">
           <h2 className="font-headline text-4xl font-black italic tracking-tighter text-on-surface uppercase leading-none">Activity</h2>
           <p className="font-label text-on-surface-variant text-[10px] tracking-widest uppercase">Community Progress • Live</p>
         </div>
-        <button
-          onClick={() => setShowCompose(!showCompose)}
-          className="icon-button w-10 h-10 bg-primary-container text-on-primary-container rounded-xl active:scale-95 transition-transform"
-        >
-          {showCompose ? <Close className="w-5 h-5" /> : <Add className="w-5 h-5" />}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleMigrateExisting}
+            disabled={migrating}
+            className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors disabled:opacity-40"
+            title="Mevcut postları Drive'a taşı"
+          >
+            {migrating
+              ? <span className="w-4 h-4 border-2 border-primary-container border-t-transparent rounded-full animate-spin block" />
+              : <span className="material-symbols-outlined text-lg">cloud_upload</span>
+            }
+          </button>
+          <button
+            onClick={() => setShowCompose(!showCompose)}
+            className="icon-button w-10 h-10 bg-primary-container text-on-primary-container rounded-xl active:scale-95 transition-transform"
+          >
+            {showCompose ? <Close className="w-5 h-5" /> : <Add className="w-5 h-5" />}
+          </button>
+        </div>
       </div>
 
       {/* Compose Post */}
@@ -1300,48 +1257,50 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
                 onChange={(e) => setNewPostContent(e.target.value)}
               />
               {photoPreview && (
-                <div className="relative w-full h-40 rounded-xl overflow-hidden">
+                <div className="relative w-full h-48 rounded-2xl overflow-hidden bg-surface-container-high">
                   <img src={photoPreview} className="w-full h-full object-cover" alt="preview" />
                   <button
                     onClick={clearPhoto}
-                    className="absolute top-2 right-2 w-8 h-8 bg-black text-white rounded-full flex items-center justify-center border-2 border-white/40 active:scale-90 transition-transform"
+                    className="absolute bottom-2 right-2 flex items-center gap-1.5 bg-black/75 text-white text-xs font-bold px-3 py-1.5 rounded-full active:scale-95 transition-transform"
                   >
-                    <Close className="w-4 h-4" />
+                    <Delete className="w-3.5 h-3.5" />
+                    Kaldır
                   </button>
                 </div>
               )}
               {videoPreview && (
-                <div className="relative w-full rounded-xl overflow-hidden bg-black">
-                  <video src={videoPreview} controls playsInline className="w-full max-h-60 object-contain" />
+                <div className="relative w-full rounded-2xl overflow-hidden bg-black">
+                  <video src={videoPreview} controls playsInline className="w-full max-h-64 object-contain" />
                   <button
                     onClick={clearVideo}
-                    className="absolute top-2 right-2 w-8 h-8 bg-black text-white rounded-full flex items-center justify-center border-2 border-white/40 active:scale-90 transition-transform"
+                    className="absolute bottom-2 right-2 flex items-center gap-1.5 bg-black/75 text-white text-xs font-bold px-3 py-1.5 rounded-full active:scale-95 transition-transform"
                   >
-                    <Close className="w-4 h-4" />
+                    <Delete className="w-3.5 h-3.5" />
+                    Kaldır
                   </button>
                 </div>
               )}
-              {uploadingVideo && (
+              {(posting || uploadingVideo) && (
                 <div className="flex items-center gap-2 text-on-surface-variant text-xs">
                   <span className="w-3 h-3 border-2 border-primary-container border-t-transparent rounded-full animate-spin" />
-                  Video Drive'a yükleniyor...
+                  {uploadingVideo ? "Video Drive'a yükleniyor..." : "Fotoğraf Drive'a yükleniyor..."}
                 </div>
               )}
               <div className="flex justify-between items-center">
                 <div className="flex gap-2">
                   {!newPostVideo && (
                     <>
-                      <button onClick={() => cameraInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Take photo">
+                      <button onClick={() => cameraInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Fotoğraf çek">
                         <PhotoCamera className="w-5 h-5" />
                       </button>
-                      <button onClick={() => galleryInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Choose from gallery">
+                      <button onClick={() => galleryInputRef.current?.click()} className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors" title="Galeriden seç">
                         <Image className="w-5 h-5" />
                       </button>
                     </>
                   )}
                   {!newPostPhoto && !newPostVideo && (
                     <button
-                      onClick={startRecording}
+                      onClick={() => videoInputRef.current?.click()}
                       className="icon-button w-8 h-8 text-on-surface-variant hover:text-primary-container transition-colors"
                       title="Video kaydet"
                     >
