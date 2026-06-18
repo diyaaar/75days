@@ -15,10 +15,6 @@
       "schedule": "0 8 * * 1,4"
     },
     {
-      "path": "/api/send-reminders",
-      "schedule": "*/5 * * * *"
-    },
-    {
       "path": "/api/cleanup-videos",
       "schedule": "0 3 * * *"
     }
