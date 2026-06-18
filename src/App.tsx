@@ -2565,15 +2565,28 @@ export default function App() {
       if (authResult !== 'granted') return;
 
       const registration = await navigator.serviceWorker.ready;
-      
+
+      const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+      if (!vapidPublicKey) return;
+      const desiredKey = urlB64ToUint8Array(vapidPublicKey);
+
       let subscription = await registration.pushManager.getSubscription();
+
+      // VAPID anahtarı rotasyonu: mevcut abonelik eski bir anahtarla oluşturulduysa
+      // (anahtar yenilendiyse) onu iptal edip yeni anahtarla yeniden abone ol.
+      if (subscription) {
+        const existing = new Uint8Array(subscription.options.applicationServerKey || new ArrayBuffer(0));
+        const sameKey = existing.length === desiredKey.length && existing.every((b, i) => b === desiredKey[i]);
+        if (!sameKey) {
+          try { await subscription.unsubscribe(); } catch { /* yok say */ }
+          subscription = null;
+        }
+      }
+
       if (!subscription) {
-        const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
-        if (!vapidPublicKey) return;
-        
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlB64ToUint8Array(vapidPublicKey) as any
+          applicationServerKey: desiredKey as any
         });
       }
 
