@@ -86,6 +86,49 @@ async function setPublicReadable(token: string, fileId: string) {
   });
 }
 
+// Büyük dosyalar için resumable upload: kaynağı (Supabase public URL) stream ederek
+// Drive'a aktarır — dosyanın tamamı belleğe alınmaz (yüksek MB videolar için).
+async function uploadResumableFromUrl(
+  token: string,
+  sourceUrl: string,
+  size: number,
+  filename: string,
+  mimeType: string,
+  parentFolderId: string,
+): Promise<{ id: string }> {
+  // 1) Resumable oturumu başlat
+  const sessionRes = await fetch(`${DRIVE_UPLOAD_API}?uploadType=resumable&fields=id`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': mimeType,
+      'X-Upload-Content-Length': String(size),
+    },
+    body: JSON.stringify({ name: filename, parents: [parentFolderId] }),
+  });
+  if (!sessionRes.ok) throw new Error(`Resumable oturum hatası: ${await sessionRes.text()}`);
+  const uploadUri = sessionRes.headers.get('location');
+  if (!uploadUri) throw new Error('Resumable upload URI alınamadı');
+
+  // 2) Kaynağı stream olarak indir
+  const src = await fetch(sourceUrl);
+  if (!src.ok || !src.body) throw new Error(`Kaynak indirilemedi (${src.status})`);
+
+  // 3) Tek PUT ile stream'i Drive'a aktar (Content-Length zorunlu)
+  const putRes = await fetch(uploadUri, {
+    method: 'PUT',
+    headers: { 'Content-Length': String(size), 'Content-Type': mimeType },
+    body: src.body,
+    // @ts-ignore Deno streaming request body
+    duplex: 'half',
+  });
+  if (putRes.status !== 200 && putRes.status !== 201) {
+    throw new Error(`Resumable PUT hatası: ${putRes.status} ${await putRes.text()}`);
+  }
+  return await putRes.json();
+}
+
 async function getFileParents(token: string, fileId: string): Promise<string[]> {
   const res = await fetch(`${DRIVE_FILES_API}/${fileId}?fields=parents&supportsAllDrives=true`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -268,6 +311,61 @@ async function handleUploadVideo(payload: any, supabaseAdmin: any) {
     drive_web_view_link: driveFile.webViewLink,
     drive_embed_url: driveVideoEmbedUrl(driveFile.id),
   };
+}
+
+// ── ACTION: stage_video_to_drive ──────────────────────────────────────────────
+// Supabase'deki geçici videoyu Drive'a (ROOT/Feed) resumable upload ile aktarır.
+// Supabase kopyası SİLİNMEZ — render bir süre Supabase'den devam eder, cron 1 gün
+// sonra Supabase'i silip Drive'a geçirir. post_id verilirse satıra drive id yazılır.
+async function handleStageVideoToDrive(payload: any, supabaseAdmin: any) {
+  const { staging_path, user_id, post_id } = payload;
+  if (!staging_path || !user_id) throw new Error('staging_path ve user_id zorunlu');
+
+  const token = await getAccessToken();
+  const feedFolderId = await getFeedFolder(token);
+  const { data: pub } = supabaseAdmin.storage.from(MEDIA_BUCKET).getPublicUrl(staging_path);
+  const sourceUrl = pub.publicUrl;
+
+  // Boyut + mime tipini kaynaktan öğren
+  const head = await fetch(sourceUrl, { method: 'HEAD' });
+  const size = Number(head.headers.get('content-length') || 0);
+  if (!size) throw new Error('Kaynak boyutu alınamadı');
+  const mime = head.headers.get('content-type') || guessMimeType(staging_path, true);
+
+  const username = await getUsername(supabaseAdmin, user_id);
+  const ext = staging_path.split('.').pop()?.toLowerCase() ?? 'mp4';
+  const filename = feedFilename(username, undefined, ext);
+
+  const driveFile = await uploadResumableFromUrl(token, sourceUrl, size, filename, mime, feedFolderId);
+  await setPublicReadable(token, driveFile.id);
+
+  if (post_id) {
+    await supabaseAdmin.from('social_feed').update({
+      video_drive_file_id: driveFile.id,
+      video_drive_url: driveVideoEmbedUrl(driveFile.id),
+    }).eq('id', post_id);
+  }
+  return { drive_file_id: driveFile.id, drive_embed_url: driveVideoEmbedUrl(driveFile.id) };
+}
+
+// ── ACTION: admin_remove_objects (Storage'dan KALICI siler) ───────────────────
+// avatars bucket'ı korumalıdır. Verilen path listesini batch'ler hâlinde siler.
+async function handleAdminRemoveObjects(supabaseAdmin: any, payload: any) {
+  const bucket = payload.bucket;
+  if (!bucket) throw new Error('bucket zorunlu');
+  if (bucket === 'avatars') throw new Error('avatars bucket korumalı — silinemez');
+  const paths: string[] = payload.paths ?? [];
+  if (!paths.length) return { removed: 0, errors: [] };
+
+  let removed = 0;
+  const errors: string[] = [];
+  for (let i = 0; i < paths.length; i += 100) {
+    const batch = paths.slice(i, i + 100);
+    const { data, error } = await supabaseAdmin.storage.from(bucket).remove(batch);
+    if (error) errors.push(error.message);
+    else removed += data?.length ?? batch.length;
+  }
+  return { removed, errors };
 }
 
 // ── İç: Feed migrasyonu (TAŞIMA temelli, yeniden yükleme YOK) ──────────────────
@@ -525,6 +623,7 @@ Deno.serve(async (req: Request) => {
       if (action === 'admin_list_drive') return json(await handleAdminListDrive(supabaseAdmin));
       if (action === 'admin_migrate') return json(await handleAdminMigrate(supabaseAdmin, payload));
       if (action === 'admin_cleanup') return json(await handleAdminCleanup(supabaseAdmin, payload));
+      if (action === 'admin_remove_objects') return json(await handleAdminRemoveObjects(supabaseAdmin, payload));
       return new Response(JSON.stringify({ error: `Bilinmeyen admin action: ${action}` }), { status: 400, headers: jsonHeaders });
     }
 
@@ -537,6 +636,7 @@ Deno.serve(async (req: Request) => {
     if (action === 'upload_task_photo') return json(await handleUploadTaskPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin));
     if (action === 'upload_photo') return json(await handleUploadPhoto({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin));
     if (action === 'upload_video') return json(await handleUploadVideo({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin));
+    if (action === 'stage_video_to_drive') return json(await handleStageVideoToDrive({ ...payload, user_id: payload.user_id || user.id }, supabaseAdmin));
 
     return new Response(JSON.stringify({ error: `Bilinmeyen action: ${action}` }), { status: 400, headers: jsonHeaders });
   } catch (err: unknown) {

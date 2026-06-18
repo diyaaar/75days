@@ -141,6 +141,8 @@ interface FeedItem {
   photo_drive_file_id: string | null;
   video_drive_file_id: string | null;
   video_drive_url: string | null;
+  video_supabase_url: string | null;
+  video_supabase_path: string | null;
   media_type: 'none' | 'image' | 'video';
   created_at: string;
   profiles: Profile;
@@ -1247,6 +1249,8 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
       let photoDriveFileId: string | null = null;
       let videoDriveFileId: string | null = null;
       let videoDriveUrl: string | null = null;
+      let videoSupabaseUrl: string | null = null;
+      let videoSupabasePath: string | null = null;
       let mediaType: 'none' | 'image' | 'video' = 'none';
 
       if (newPostPhoto) {
@@ -1272,6 +1276,9 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
       }
 
       if (newPostVideo) {
+        // Yeni akış: video önce Supabase'e yüklenir ve feed'de ANINDA Supabase'den
+        // gösterilir (Drive transcode beklemeden). Post oluştuktan sonra arka planda
+        // Drive'a aktarılır; 1 gün sonra cron Supabase kopyasını silip Drive'a geçer.
         setUploadingVideo(true);
         const ext = newPostVideo.name.split('.').pop() ?? 'mp4';
         const stagingPath = `${session.user.id}/video_${Date.now()}.${ext}`;
@@ -1280,18 +1287,9 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
           .upload(stagingPath, newPostVideo, { contentType: newPostVideo.type || 'video/mp4' });
         if (stagingError) throw stagingError;
 
-        const { data: driveResult, error: driveError } = await supabase.functions.invoke('drive-manager', {
-          body: { action: 'upload_video', staging_path: stagingPath, user_id: session.user.id, filename: newPostVideo.name },
-        });
-
-        if (driveError || !driveResult?.drive_file_id) {
-          const { data: fbUrl } = supabase.storage.from('task_photos').getPublicUrl(stagingPath);
-          photoUrl = fbUrl.publicUrl;
-          toast('Video Drive\'a yüklenemedi, yerel depolama kullanıldı', { icon: '⚠️' });
-        } else {
-          videoDriveFileId = driveResult.drive_file_id;
-          videoDriveUrl = driveResult.drive_web_view_link;
-        }
+        const { data: pub } = supabase.storage.from('task_photos').getPublicUrl(stagingPath);
+        videoSupabaseUrl = pub.publicUrl;
+        videoSupabasePath = stagingPath;
         mediaType = 'video';
         setUploadingVideo(false);
       }
@@ -1307,6 +1305,8 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         photo_drive_file_id: photoDriveFileId,
         video_drive_file_id: videoDriveFileId,
         video_drive_url: videoDriveUrl,
+        video_supabase_url: videoSupabaseUrl,
+        video_supabase_path: videoSupabasePath,
         media_type: mediaType,
         created_at: new Date().toISOString(),
         profiles: profile as Profile,
@@ -1322,12 +1322,25 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
         photo_drive_file_id: photoDriveFileId,
         video_drive_file_id: videoDriveFileId,
         video_drive_url: videoDriveUrl,
+        video_supabase_url: videoSupabaseUrl,
+        video_supabase_path: videoSupabasePath,
         media_type: mediaType,
       }).select().single();
       if (error) throw error;
 
       // Temp post'u gerçek ID ile güncelle
       setPosts(prev => prev.map(p => p.id === tempId ? { ...p, id: insertedPost.id } : p));
+
+      // Video varsa: arka planda Supabase -> Drive aktarımını tetikle (fire-and-forget).
+      // İstek küçük olduğu için anında gider; ağır transfer sunucu tarafında tamamlanır,
+      // kullanıcı uygulamadan çıksa bile Drive'a yükleme sürer.
+      if (videoSupabasePath) {
+        supabase.functions.invoke('drive-manager', {
+          body: { action: 'stage_video_to_drive', staging_path: videoSupabasePath, user_id: session.user.id, post_id: insertedPost.id },
+        }).then(({ error: stageErr }: any) => {
+          if (stageErr) console.warn('Video Drive aktarımı başlatılamadı:', stageErr);
+        });
+      }
 
       await supabase.functions.invoke('send-push-notification', {
         body: {
@@ -1519,7 +1532,12 @@ const Feed = ({ session, profile }: { session: any, profile: Profile | null }) =
               )}
             </div>
           </div>
-          {post.media_type === 'video' && post.video_drive_file_id ? (
+          {post.media_type === 'video' && post.video_supabase_url ? (
+            // Yeni yüklenen video: Supabase'den anında oynatılır (Drive transcode beklemeden)
+            <div className="relative rounded-xl overflow-hidden bg-black">
+              <video src={post.video_supabase_url} controls preload="metadata" className="w-full max-h-80 object-contain" />
+            </div>
+          ) : post.media_type === 'video' && post.video_drive_file_id ? (
             <div className="relative rounded-xl overflow-hidden bg-black aspect-video">
               <iframe
                 src={`https://drive.google.com/file/d/${post.video_drive_file_id}/preview`}
